@@ -180,4 +180,6 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-agent.txt
+.agents
+assets/
+wnacg.txt
