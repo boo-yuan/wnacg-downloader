@@ -181,3 +181,9 @@ cython_debug/
 .cursorindexingignore
 
 .agents
+
+# Application specific runtime files
+app.log
+config.json
+tasks.db
+.temp_covers/
