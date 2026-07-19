@@ -7,7 +7,7 @@ import os
 import asyncio
 from pathlib import Path
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import Session
 from core.config import cfg, ProxyMode
 
 class LineEditSettingCard(SettingCard):
@@ -60,18 +60,27 @@ class DomainFetchWorker(QThread):
     
     def run(self):
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            domains = loop.run_until_complete(self.fetch())
+            domains = self.fetch()
             self.finished_signal.emit(domains)
         except Exception:
             pass
 
-    async def fetch(self):
+    def fetch(self):
         domains = []
         try:
-            async with AsyncSession(impersonate="chrome120", timeout=10) as s:
-                r = await s.get("https://wnacg01.link/")
+            kwargs = {
+                "impersonate": "chrome120",
+                "timeout": 10
+            }
+            if cfg.proxy_mode == "custom":
+                kwargs["proxies"] = cfg.curl_cffi_proxies
+            elif cfg.proxy_mode == "direct":
+                kwargs["trust_env"] = False
+            else:
+                kwargs["trust_env"] = True
+                
+            with Session(**kwargs) as s:
+                r = s.get("https://wnacg01.link/")
                 if r.status_code == 200:
                     soup = BeautifulSoup(r.text, 'html.parser')
                     for a in soup.find_all('a'):
@@ -201,6 +210,7 @@ class SettingInterface(ScrollArea):
         # 启动后台域名抓取
         self.fetch_worker = DomainFetchWorker(self)
         self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
+        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
         self.fetch_worker.start()
         
     def _on_domains_fetched(self, domains):

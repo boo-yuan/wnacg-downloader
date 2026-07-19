@@ -68,7 +68,7 @@ class DownloaderWorker(QThread):
         invalid_chars = '<>:"/\\|?*'
         for c in invalid_chars:
             name = name.replace(c, '')
-        return name.strip()
+        return name.strip().rstrip('.')
 
     def pause_task(self, task_id: str):
         if task_id in self._cancel_events:
@@ -249,28 +249,38 @@ class DownloaderWorker(QThread):
                 temp_path = Path(task.save_path) / f"temp_{idx}_{uuid.uuid4().hex[:8]}.tmp"
                 
                 async with sem:
-                    async with WnacgCrawler.get_client() as client:
-                        resp = await client.get(raw_url, timeout=30.0)
-                        if resp.status_code == 200:
-                            with open(temp_path, "wb") as f:
-                                f.write(resp.content)
+                    for attempt in range(3):
+                        if cancel_event.is_set(): return False
+                        try:
+                            resp = await client.get(raw_url, timeout=30.0)
+                            if resp.status_code == 200:
+                                with open(temp_path, "wb") as f:
+                                    f.write(resp.content)
+                                    
+                                if process_and_save_image(temp_path, Path(task.save_path), idx, raw_url):
+                                    db.update_image_status(task_id, idx, 'downloaded')
+                                    return True
+                        except Exception as e:
+                            if attempt == 2:
+                                logger.error(f"Failed to download image {idx} after 3 attempts: {e}")
+                            else:
+                                await asyncio.sleep(2.0)
                                 
-                            if process_and_save_image(temp_path, Path(task.save_path), idx, raw_url):
-                                db.update_image_status(task_id, idx, 'downloaded')
-                                return True
-                        return False
+                    return False
 
             images = db.get_images(task_id) # reload status
-            tasks_coros = [download_image(img) for img in images if img['status'] != 'downloaded']
             
-            for coro in asyncio.as_completed(tasks_coros):
-                success = await coro
-                if cancel_event.is_set():
-                    break
-                if success:
-                    task.downloaded_images += 1
-                    db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
-                    self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
+            async with WnacgCrawler.get_client() as client:
+                tasks_coros = [download_image(img) for img in images if img['status'] != 'downloaded']
+                
+                for coro in asyncio.as_completed(tasks_coros):
+                    success = await coro
+                    if cancel_event.is_set():
+                        break
+                    if success:
+                        task.downloaded_images += 1
+                        db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+                        self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
             
             if cancel_event.is_set():
                 # Status already handled by pause_task or cancel_task

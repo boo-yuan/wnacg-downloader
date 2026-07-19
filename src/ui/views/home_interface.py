@@ -12,8 +12,8 @@ from PySide6.QtGui import QAction, QShortcut, QKeySequence
 from PySide6.QtWidgets import QMenu
 
 class SearchWorker(QThread):
-    result_signal = Signal(list, int, int) # results, total_pages, page
-    error_signal = Signal(str, int) # error_message, page
+    result_signal = Signal(str, list, int, int) # keyword, results, total_pages, page
+    error_signal = Signal(str, str, int) # keyword, error_message, page
     
     def __init__(self, keyword, page, delay=0.0):
         super().__init__()
@@ -26,15 +26,10 @@ class SearchWorker(QThread):
             if self.delay > 0:
                 import time
                 time.sleep(self.delay)
-            # 建立新的事件循环用于爬虫执行
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            results, total_pages = loop.run_until_complete(
-                WnacgCrawler.search(self.keyword, self.page)
-            )
-            self.result_signal.emit(results, total_pages, self.page)
+            results, total_pages = WnacgCrawler.search_sync(self.keyword, self.page)
+            self.result_signal.emit(self.keyword, results, total_pages, self.page)
         except Exception as e:
-            self.error_signal.emit(str(e), self.page)
+            self.error_signal.emit(self.keyword, str(e), self.page)
 
 class HomeInterface(QWidget):
     def __init__(self, parent=None):
@@ -167,10 +162,15 @@ class HomeInterface(QWidget):
         w = SearchWorker(self.current_keyword, page, delay)
         w.result_signal.connect(self._on_preload_result)
         w.error_signal.connect(self._on_preload_error)
+        w.finished.connect(w.deleteLater)
+        w.finished.connect(lambda k=cache_key: self.workers.pop(k, None))
         self.workers[cache_key] = w
         w.start()
 
-    def _on_preload_result(self, results, total_pages, page):
+    def _on_preload_result(self, keyword, results, total_pages, page):
+        if keyword != self.current_keyword:
+            return
+            
         if not results and page > 1:
             total_pages = min(total_pages, page - 1)
             self.total_pages = min(self.total_pages, page - 1)
@@ -180,19 +180,14 @@ class HomeInterface(QWidget):
         self._search_cache[cache_key] = (results, total_pages)
         if cache_key in self._preloading_pages:
             self._preloading_pages.remove(cache_key)
-        if cache_key in self.workers:
-            del self.workers[cache_key]
             
-        for comic in results:
-            if comic.cover_url:
-                cover_manager.preload(comic.cover_url)
+    def _on_preload_error(self, keyword, err_msg, page):
+        if keyword != self.current_keyword:
+            return
             
-    def _on_preload_error(self, err_msg, page):
         cache_key = (self.current_keyword, page)
         if cache_key in self._preloading_pages:
             self._preloading_pages.remove(cache_key)
-        if cache_key in self.workers:
-            del self.workers[cache_key]
 
     def do_search(self, keyword: str):
         if not keyword.strip(): return
@@ -228,7 +223,8 @@ class HomeInterface(QWidget):
         cache_key = (self.current_keyword, self.current_page)
         if cache_key in self._search_cache:
             results, total_pages = self._search_cache[cache_key]
-            self._on_search_result(results, total_pages, self.current_page)
+            self._on_search_result(self.current_keyword, results, total_pages, self.current_page)
+            return
         elif cache_key in self.workers:
             # wait for preload to finish
             w = self.workers[cache_key]
@@ -238,14 +234,19 @@ class HomeInterface(QWidget):
             w.error_signal.connect(self._on_search_error)
             if cache_key in self._preloading_pages:
                 self._preloading_pages.remove(cache_key)
-            del self.workers[cache_key]
         else:
             self.worker = SearchWorker(self.current_keyword, self.current_page)
             self.worker.result_signal.connect(self._on_search_result)
             self.worker.error_signal.connect(self._on_search_error)
+            self.worker.finished.connect(self.worker.deleteLater)
+            # No need to add to workers dict because it's stored in self.worker
             self.worker.start()
 
-    def _on_search_result(self, results, total_pages, page):
+    def _on_search_result(self, keyword, results, total_pages, page):
+        if keyword != self.current_keyword:
+            return
+            
+        self.worker = None
         self.searchBar.setEnabled(True)
         self.bottomWidget.setEnabled(True)
         
@@ -271,7 +272,11 @@ class HomeInterface(QWidget):
             card.downloadClicked.connect(self._on_download_clicked)
             self.flowLayout.addWidget(card)
             
-    def _on_search_error(self, err_msg, page):
+    def _on_search_error(self, keyword, err_msg, page):
+        if keyword != self.current_keyword:
+            return
+            
+        self.worker = None
         if page != self.current_page: return
         self.searchBar.setEnabled(True)
         self.bottomWidget.setEnabled(True)

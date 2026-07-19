@@ -1,4 +1,4 @@
-from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import AsyncSession, Session
 from bs4 import BeautifulSoup
 from typing import List, Tuple
 from core.models import Comic
@@ -8,6 +8,22 @@ import urllib.parse
 
 class WnacgCrawler:
     
+    @staticmethod
+    def get_sync_client() -> Session:
+        kwargs = {
+            "impersonate": "chrome",
+            "verify": False,
+            "timeout": 15.0,
+        }
+        if cfg.proxy_mode == "custom":
+            kwargs["proxies"] = cfg.curl_cffi_proxies
+        elif cfg.proxy_mode == "direct":
+            kwargs["trust_env"] = False
+        else: # system
+            kwargs["trust_env"] = True
+            
+        return Session(**kwargs)
+        
     @staticmethod
     def get_client() -> AsyncSession:
         kwargs = {
@@ -24,6 +40,54 @@ class WnacgCrawler:
             kwargs["trust_env"] = True
             
         return AsyncSession(**kwargs)
+        
+    @classmethod
+    def search_sync(cls, keyword: str, page: int = 1) -> Tuple[List[Comic], int]:
+        """
+        同步版本的搜索逻辑，用于后台独立线程，避免多个 asyncio 事件循环导致 curl_cffi 崩溃
+        """
+        encoded_kw = urllib.parse.quote(keyword)
+        base_url = f"https://{cfg.domain}"
+        url = f"{base_url}/search/index.php?q={encoded_kw}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}"
+        
+        results = []
+        with cls.get_sync_client() as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            items = soup.select('.gallary_item')
+            for item in items:
+                title_elem = item.select_one('.title a')
+                if not title_elem:
+                    continue
+                title = title_elem.text.strip()
+                link = title_elem.get('href', '')
+                
+                img_elem = item.select_one('img')
+                cover_url = img_elem.get('src', '') if img_elem else ''
+                if cover_url.startswith('//'):
+                    cover_url = 'https:' + cover_url
+                    
+                aid = ""
+                if "aid-" in link:
+                    aid = link.split("aid-")[1].split(".html")[0]
+                    
+                results.append(Comic(
+                    aid=aid,
+                    title=title,
+                    cover_url=cover_url,
+                    url=link
+                ))
+                
+            max_page = 1
+            paginator = soup.select_one('.f_left.paginator')
+            if paginator:
+                for el in paginator.find_all(['a', 'span']):
+                    text = el.text.strip()
+                    if text.isdigit():
+                        max_page = max(max_page, int(text))
+                        
+            return results, max_page
 
     @classmethod
     async def search(cls, keyword: str, page: int = 1) -> Tuple[List[Comic], int]:

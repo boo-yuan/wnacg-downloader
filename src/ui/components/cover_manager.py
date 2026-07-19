@@ -19,14 +19,14 @@ def _cleanup_covers():
 # Register cleanup on exit
 atexit.register(_cleanup_covers)
 
-class WorkerSignals(QObject):
+class CoverManagerSignals(QObject):
     finished = Signal(str, QImage)
 
 class CoverFetchTask(QRunnable):
-    def __init__(self, url):
+    def __init__(self, url, signals):
         super().__init__()
         self.url = url
-        self.signals = WorkerSignals()
+        self.signals = signals
         
     def run(self):
         filename = hashlib.md5(self.url.encode()).hexdigest() + ".jpg"
@@ -95,6 +95,8 @@ class CoverManagerClass(QObject):
         # To limit only covers to 5, we should probably just use our own thread pool!
         self.cover_pool = QThreadPool()
         self.cover_pool.setMaxThreadCount(5)
+        self.signals = CoverManagerSignals()
+        self.signals.finished.connect(self._on_task_finished)
         
         # In-flight task tracker to avoid duplicate downloads of the same URL
         self._pending_callbacks = {}
@@ -117,8 +119,7 @@ class CoverManagerClass(QObject):
             return
             
         self._pending_callbacks[url] = [callback] if callback else []
-        task = CoverFetchTask(url)
-        task.signals.finished.connect(self._on_task_finished)
+        task = CoverFetchTask(url, self.signals)
         self.cover_pool.start(task)
         
     def preload(self, url):
