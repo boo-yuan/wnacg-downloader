@@ -169,27 +169,75 @@ class WnacgCrawler:
     @classmethod
     async def get_image_view_links(cls, aid: str) -> List[str]:
         """
-        获取文章页中所有的浏览页(photos-view-id)链接。为了演示稳定版，先只抓第一页缩略图。
+        获取文章页中所有的浏览页(photos-view-id)链接。自动解析分页并抓取所有缩略图链接。
         """
+        import asyncio
         base_url = f"https://{cfg.domain}"
-        url = f"{base_url}/photos-index-page-1-aid-{aid}.html"
         view_links = []
+        
         async with cls.get_client() as client:
             try:
-                resp = await client.get(url)
+                first_page_url = f"{base_url}/photos-index-page-1-aid-{aid}.html"
+                resp = await client.get(first_page_url)
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, 'html.parser')
+                
+                # 解析第一页
                 pics = soup.select('.pic_box a')
                 for pic in pics:
                     href = pic.get('href')
                     if href:
-                        # 兼容相对路径
                         if href.startswith('/'):
                             view_links.append(f"{base_url}{href}")
                         else:
                             view_links.append(href)
+                            
+                # 寻找最大页码
+                max_page = 1
+                paginator = soup.select_one('.f_left.paginator')
+                if paginator:
+                    for el in paginator.find_all(['a', 'span']):
+                        text = el.text.strip()
+                        if text.isdigit():
+                            max_page = max(max_page, int(text))
+                            
+                if max_page > 1:
+                    sem = asyncio.Semaphore(3) # 限制并发并发抓取页码的连接数
+                    async def fetch_page(page_num: int):
+                        page_url = f"{base_url}/photos-index-page-{page_num}-aid-{aid}.html"
+                        async with sem:
+                            for attempt in range(3):
+                                try:
+                                    r = await client.get(page_url, timeout=15.0)
+                                    r.raise_for_status()
+                                    p_soup = BeautifulSoup(r.text, 'html.parser')
+                                    p_pics = p_soup.select('.pic_box a')
+                                    links = []
+                                    for pic in p_pics:
+                                        href = pic.get('href')
+                                        if href:
+                                            if href.startswith('/'):
+                                                links.append(f"{base_url}{href}")
+                                            else:
+                                                links.append(href)
+                                    return page_num, links
+                                except Exception as e:
+                                    if attempt == 2:
+                                        logger.error(f"Failed to fetch page {page_num} of {aid}: {e}")
+                                    await asyncio.sleep(1.0)
+                        return page_num, []
+
+                    tasks = [fetch_page(p) for p in range(2, max_page + 1)]
+                    results = await asyncio.gather(*tasks)
+                    
+                    # 按页码顺序拼装
+                    results.sort(key=lambda x: x[0])
+                    for _, links in results:
+                        view_links.extend(links)
+                        
             except Exception as e:
                 logger.error(f"Failed to get image view links: {e}")
+                
         return view_links
 
     @classmethod

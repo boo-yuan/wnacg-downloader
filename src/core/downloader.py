@@ -236,11 +236,17 @@ class DownloaderWorker(QThread):
                 # Fetch raw url if missing
                 if not raw_url:
                     async with sem:
-                        raw_url = await WnacgCrawler.get_raw_image_url(view_url)
-                        if raw_url:
-                            db.update_image_raw_url(task_id, idx, raw_url)
-                        else:
-                            return False
+                        for attempt in range(3):
+                            if cancel_event.is_set(): return False
+                            raw_url = await WnacgCrawler.get_raw_image_url(view_url)
+                            if raw_url:
+                                db.update_image_raw_url(task_id, idx, raw_url)
+                                break
+                            else:
+                                if attempt == 2:
+                                    logger.error(f"Failed to get raw url for {view_url} after 3 attempts")
+                                    return False
+                                await asyncio.sleep(2.0)
                             
                 # Check if already downloaded
                 naming = cfg.download_naming
@@ -338,8 +344,13 @@ class DownloaderWorker(QThread):
         self._loop.run_forever()
 
     def stop(self):
+        # Cancel all active tasks to allow clean exit
+        for cancel_event in self._cancel_events.values():
+            cancel_event.set()
+            
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
+            
         self.wait(2000)
 
 # 全局单例调度器

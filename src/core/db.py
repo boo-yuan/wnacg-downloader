@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 import json
 from typing import List, Optional
@@ -12,7 +13,7 @@ def get_conn():
     return conn
 
 def init_db():
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -45,7 +46,7 @@ def init_db():
         conn.commit()
 
 def save_task(task: DownloadTask):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO tasks 
@@ -59,7 +60,7 @@ def save_task(task: DownloadTask):
         conn.commit()
 
 def get_all_tasks() -> List[DownloadTask]:
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks ORDER BY created_at DESC")
         rows = cursor.fetchall()
@@ -86,7 +87,7 @@ def get_all_tasks() -> List[DownloadTask]:
         return tasks
 
 def get_task(task_id: str) -> Optional[DownloadTask]:
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
@@ -111,7 +112,7 @@ def get_task(task_id: str) -> Optional[DownloadTask]:
         )
 
 def get_task_by_aid(aid: str) -> Optional[DownloadTask]:
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE aid = ?", (aid,))
         row = cursor.fetchone()
@@ -136,33 +137,33 @@ def get_task_by_aid(aid: str) -> Optional[DownloadTask]:
         )
 
 def update_task_status(task_id: str, status: TaskStatus, error_message: str = None):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE tasks SET status = ?, error_message = ? WHERE id = ?", (status.value, error_message, task_id))
         conn.commit()
 
 def update_task_progress(task_id: str, progress: float, downloaded: int, total: int):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE tasks SET progress = ?, downloaded_images = ?, total_images = ? WHERE id = ?", 
                        (progress, downloaded, total, task_id))
         conn.commit()
 
 def delete_task(task_id: str):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         cursor.execute("DELETE FROM images WHERE task_id = ?", (task_id,))
         conn.commit()
 
 def reset_downloading_tasks():
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE tasks SET status = ? WHERE status = ?", (TaskStatus.PAUSED.value, TaskStatus.DOWNLOADING.value))
         conn.commit()
 
 def save_view_links(task_id: str, view_links: List[str]):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         for i, link in enumerate(view_links):
             cursor.execute("""
@@ -172,19 +173,19 @@ def save_view_links(task_id: str, view_links: List[str]):
         conn.commit()
 
 def get_images(task_id: str):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM images WHERE task_id = ? ORDER BY image_index ASC", (task_id,))
         return [dict(row) for row in cursor.fetchall()]
 
 def update_image_raw_url(task_id: str, image_index: int, raw_url: str):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE images SET raw_url = ? WHERE task_id = ? AND image_index = ?", (raw_url, task_id, image_index))
         conn.commit()
 
 def update_image_status(task_id: str, image_index: int, status: str):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE images SET status = ? WHERE task_id = ? AND image_index = ?", (status, task_id, image_index))
         conn.commit()
