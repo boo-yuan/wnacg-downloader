@@ -60,7 +60,7 @@ class DownloaderWorker(QThread):
         self._update_badge()
         
         if cfg.auto_start_download and self._loop:
-            self._loop.call_soon_threadsafe(self.resume_task, task.id)
+            self.resume_task(task.id)
             
         return task
         
@@ -76,14 +76,30 @@ class DownloaderWorker(QThread):
         db.update_task_status(task_id, TaskStatus.PAUSED)
         self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
         self._update_badge()
+        self._check_queue()
 
     def resume_task(self, task_id: str):
         if self._loop and task_id not in self._active_tasks:
             db.update_task_status(task_id, TaskStatus.PENDING)
             self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
-            t = asyncio.run_coroutine_threadsafe(self._process_task(task_id), self._loop)
-            self._active_tasks[task_id] = t
             self._update_badge()
+            self._check_queue()
+
+    def _check_queue(self):
+        if not self._loop: return
+        if len(self._active_tasks) >= cfg.max_concurrent_tasks: return
+        
+        tasks = db.get_all_tasks()
+        pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING and t.id not in self._active_tasks]
+        
+        for t in pending_tasks:
+            if len(self._active_tasks) >= cfg.max_concurrent_tasks:
+                break
+            task_id = t.id
+            coro = asyncio.run_coroutine_threadsafe(self._process_task(task_id), self._loop)
+            self._active_tasks[task_id] = coro
+            
+        self._update_badge()
 
     def cancel_task(self, task_id: str):
         if task_id in self._cancel_events:
@@ -91,6 +107,7 @@ class DownloaderWorker(QThread):
         db.delete_task(task_id)
         self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
+        self._check_queue()
 
     def _update_badge(self):
         tasks = db.get_all_tasks()
@@ -160,7 +177,7 @@ class DownloaderWorker(QThread):
                 self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
                 return
 
-            sem = asyncio.Semaphore(3)
+            sem = asyncio.Semaphore(cfg.max_concurrent_images)
             
             def process_and_save_image(temp_path: Path, save_dir: Path, idx: int, raw_url: str) -> bool:
                 try:
@@ -249,6 +266,8 @@ class DownloaderWorker(QThread):
                 temp_path = Path(task.save_path) / f"temp_{idx}_{uuid.uuid4().hex[:8]}.tmp"
                 
                 async with sem:
+                    if cfg.download_delay > 0:
+                        await asyncio.sleep(cfg.download_delay)
                     for attempt in range(3):
                         if cancel_event.is_set(): return False
                         try:
@@ -303,6 +322,7 @@ class DownloaderWorker(QThread):
             if task_id in self._active_tasks:
                 del self._active_tasks[task_id]
             self._update_badge()
+            self._check_queue()
 
     def run(self):
         self._loop = asyncio.new_event_loop()

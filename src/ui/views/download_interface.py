@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QMenu
 from PySide6.QtGui import QContextMenuEvent, QAction
-from qfluentwidgets import ProgressBar, TitleLabel, CardWidget, SubtitleLabel, PushButton, PrimaryPushButton, FluentIcon as FIF, InfoBar, InfoBarPosition
+from qfluentwidgets import ProgressBar, TitleLabel, CardWidget, SubtitleLabel, StrongBodyLabel, PushButton, PrimaryPushButton, FluentIcon as FIF, InfoBar, InfoBarPosition
 from core.downloader import downloader_manager
 from core.models import DownloadTask, TaskStatus
 import core.db as db
@@ -12,31 +12,15 @@ class DownloadItemCard(CardWidget):
     def __init__(self, task: DownloadTask, parent=None):
         super().__init__(parent)
         self.task = task
-        self.setFixedHeight(120)
+        self.setFixedHeight(84)
         self._is_selected = False
         
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
         
-        # Title and Status
+        # Top Row: Title and Buttons
         topLayout = QHBoxLayout()
-        self.titleLabel = SubtitleLabel(task.comic.title, self)
-        self.statusLabel = QLabel(self._get_status_text(), self)
-        self.statusLabel.setStyleSheet("color: #666;")
-        
-        topLayout.addWidget(self.titleLabel, 1)
-        topLayout.addWidget(self.statusLabel, 0, Qt.AlignmentFlag.AlignRight)
-        
-        layout.addLayout(topLayout)
-        
-        # Progress Bar
-        self.progressBar = ProgressBar(self)
-        self.progressBar.setRange(0, 100)
-        self._update_progress_ui()
-        layout.addWidget(self.progressBar)
-        
-        # Control Buttons
-        btnLayout = QHBoxLayout()
-        btnLayout.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.titleLabel = StrongBodyLabel(task.comic.title, self)
         
         self.pauseBtn = PushButton(FIF.PAUSE, '暂停', self)
         self.resumeBtn = PrimaryPushButton(FIF.PLAY, '继续', self)
@@ -46,11 +30,27 @@ class DownloadItemCard(CardWidget):
         self.resumeBtn.clicked.connect(self._on_resume)
         self.cancelBtn.clicked.connect(self._on_cancel)
         
-        btnLayout.addWidget(self.pauseBtn)
-        btnLayout.addWidget(self.resumeBtn)
-        btnLayout.addWidget(self.cancelBtn)
+        topLayout.addWidget(self.titleLabel, 1)
+        topLayout.addWidget(self.pauseBtn, 0)
+        topLayout.addWidget(self.resumeBtn, 0)
+        topLayout.addWidget(self.cancelBtn, 0)
         
-        layout.addLayout(btnLayout)
+        layout.addLayout(topLayout)
+        
+        # Bottom Row: Progress Bar and Status
+        bottomLayout = QHBoxLayout()
+        self.progressBar = ProgressBar(self)
+        self.progressBar.setRange(0, 100)
+        
+        self.statusLabel = QLabel(self._get_status_text(), self)
+        self.statusLabel.setStyleSheet("color: #666;")
+        
+        bottomLayout.addWidget(self.progressBar, 1)
+        bottomLayout.addWidget(self.statusLabel, 0)
+        
+        layout.addLayout(bottomLayout)
+        
+        self._update_progress_ui()
         self._update_btns()
         
     def _get_status_text(self):
@@ -115,6 +115,14 @@ class DownloadItemCard(CardWidget):
     def _on_cancel(self):
         downloader_manager.cancel_task(self.task.id)
         self.deleteLater()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
+                self._on_pause()
+            elif self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
+                self._on_resume()
+        super().mouseDoubleClickEvent(event)
 
     def setSelected(self, selected: bool):
         if self._is_selected == selected:

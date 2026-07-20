@@ -15,6 +15,8 @@ class Comic(BaseModel):
     title: str
     cover_url: str
     url: str
+    pic_count: str = ""
+    date: str = ""
 
 class DownloadTask(BaseModel):
     id: str

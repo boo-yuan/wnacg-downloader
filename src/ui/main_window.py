@@ -1,5 +1,7 @@
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from qfluentwidgets import FluentWindow, NavigationItemPosition, FluentIcon as FIF, InfoBadge, InfoBadgePosition
+import os
 from core.downloader import downloader_manager
 
 from ui.views.home_interface import HomeInterface
@@ -53,10 +55,13 @@ class MainWindow(FluentWindow):
                 self.downloadBadge = None
             
     def initWindow(self):
-        self.resize(900, 700)
-        self.setMinimumWidth(760)
-        self.setMinimumHeight(500)
+        self.resize(1060, 960)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(800)
         self.setWindowTitle('WNACG Downloader')
+        
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resource", "icon.png")
+        self.setWindowIcon(QIcon(icon_path))
         
         # 窗口居中
         desktop = self.screen().availableGeometry()

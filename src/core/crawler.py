@@ -5,6 +5,7 @@ from core.models import Comic
 from core.config import cfg
 from core.logger import logger
 import urllib.parse
+import re
 
 class WnacgCrawler:
     
@@ -72,11 +73,25 @@ class WnacgCrawler:
                 if "aid-" in link:
                     aid = link.split("aid-")[1].split(".html")[0]
                     
+                pic_count = ""
+                date = ""
+                info_col = item.select_one('.info_col')
+                if info_col:
+                    text = info_col.text.strip()
+                    m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
+                    if m_pic:
+                        pic_count = f"{m_pic.group(1)}图"
+                    m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+                    if m_date:
+                        date = m_date.group(1)
+                    
                 results.append(Comic(
                     aid=aid,
                     title=title,
                     cover_url=cover_url,
-                    url=link
+                    url=link,
+                    pic_count=pic_count,
+                    date=date
                 ))
                 
             max_page = 1
@@ -120,11 +135,25 @@ class WnacgCrawler:
                 if "aid-" in link:
                     aid = link.split("aid-")[1].split(".html")[0]
                     
+                pic_count = ""
+                date = ""
+                info_col = item.select_one('.info_col')
+                if info_col:
+                    text = info_col.text.strip()
+                    m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
+                    if m_pic:
+                        pic_count = f"{m_pic.group(1)}图"
+                    m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+                    if m_date:
+                        date = m_date.group(1)
+                    
                 results.append(Comic(
                     aid=aid,
                     title=title,
                     cover_url=cover_url,
-                    url=link
+                    url=link,
+                    pic_count=pic_count,
+                    date=date
                 ))
                 
             max_page = 1

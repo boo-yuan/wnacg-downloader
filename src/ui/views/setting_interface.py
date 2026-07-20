@@ -1,8 +1,9 @@
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QUrl
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QFileDialog
-from qfluentwidgets import (SettingCardGroup, SettingCard, LineEdit, ComboBox, PushSettingCard,
+from PySide6.QtGui import QDesktopServices
+from qfluentwidgets import (SettingCardGroup, SettingCard, LineEdit, ComboBox, PushSettingCard, PrimaryPushSettingCard,
                             EditableComboBox, FluentIcon as FIF, ScrollArea, ExpandLayout,
-                            SwitchButton)
+                            SwitchButton, SpinBox, DoubleSpinBox, setFont)
 import os
 import asyncio
 from pathlib import Path
@@ -53,6 +54,22 @@ class EditableComboBoxSettingCard(SettingCard):
         self.comboBox.setFixedWidth(280)
         self.comboBox.addItems(texts)
         self.hBoxLayout.addWidget(self.comboBox, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(16)
+
+class SpinBoxSettingCard(SettingCard):
+    def __init__(self, icon, title, content, parent=None):
+        super().__init__(icon, title, content, parent)
+        self.spinBox = SpinBox(self)
+        setFont(self.spinBox)
+        self.hBoxLayout.addWidget(self.spinBox, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addSpacing(16)
+
+class DoubleSpinBoxSettingCard(SettingCard):
+    def __init__(self, icon, title, content, parent=None):
+        super().__init__(icon, title, content, parent)
+        self.spinBox = DoubleSpinBox(self)
+        setFont(self.spinBox)
+        self.hBoxLayout.addWidget(self.spinBox, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)
 
 class DomainFetchWorker(QThread):
@@ -106,6 +123,7 @@ class SettingInterface(ScrollArea):
         
         self._init_proxy_settings()
         self._init_system_settings()
+        self._init_about_settings()
         
     def _init_proxy_settings(self):
         self.proxyGroup = SettingCardGroup("网络与代理设置", self.scrollWidget)
@@ -136,6 +154,44 @@ class SettingInterface(ScrollArea):
         self.expandLayout.addWidget(self.proxyGroup)
         
     def _init_system_settings(self):
+        self.concurrentGroup = SettingCardGroup("网络与并发控制", self.scrollWidget)
+        
+        self.maxTasksCard = SpinBoxSettingCard(
+            icon=FIF.CLOUD_DOWNLOAD,
+            title="最大并行任务数",
+            content="同时下载的漫画数量（建议 1-5）",
+            parent=self.concurrentGroup
+        )
+        self.maxTasksCard.spinBox.setRange(1, 10)
+        self.maxTasksCard.spinBox.setValue(cfg.max_concurrent_tasks)
+        self.maxTasksCard.spinBox.valueChanged.connect(self._on_max_tasks_changed)
+        
+        self.maxImagesCard = SpinBoxSettingCard(
+            icon=FIF.PHOTO,
+            title="单任务并发图片数",
+            content="每个任务同时下载的图片数量（过高容易被封 IP）",
+            parent=self.concurrentGroup
+        )
+        self.maxImagesCard.spinBox.setRange(1, 20)
+        self.maxImagesCard.spinBox.setValue(cfg.max_concurrent_images)
+        self.maxImagesCard.spinBox.valueChanged.connect(self._on_max_images_changed)
+        
+        self.downloadDelayCard = DoubleSpinBoxSettingCard(
+            icon=FIF.HISTORY,
+            title="图片下载间隔时间",
+            content="每张图片下载完毕后的延迟时间(秒)，缓解服务器压力",
+            parent=self.concurrentGroup
+        )
+        self.downloadDelayCard.spinBox.setRange(0.0, 10.0)
+        self.downloadDelayCard.spinBox.setSingleStep(0.5)
+        self.downloadDelayCard.spinBox.setValue(cfg.download_delay)
+        self.downloadDelayCard.spinBox.valueChanged.connect(self._on_download_delay_changed)
+        
+        self.concurrentGroup.addSettingCard(self.maxTasksCard)
+        self.concurrentGroup.addSettingCard(self.maxImagesCard)
+        self.concurrentGroup.addSettingCard(self.downloadDelayCard)
+        self.expandLayout.addWidget(self.concurrentGroup)
+
         self.sysGroup = SettingCardGroup("下载与系统设置", self.scrollWidget)
         
         self.downloadDirCard = PushSettingCard(
@@ -213,6 +269,29 @@ class SettingInterface(ScrollArea):
         self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
         self.fetch_worker.start()
         
+    def _init_about_settings(self):
+        self.aboutGroup = SettingCardGroup("关于", self.scrollWidget)
+        
+        self.helpCard = PrimaryPushSettingCard(
+            text="前往 GitHub",
+            icon=FIF.GITHUB,
+            title="WNACG Downloader",
+            content="一款采用 Fluent 设计语言构建的高性能、跨平台 WNACG 漫画离线下载工具",
+            parent=self.aboutGroup
+        )
+        self.helpCard.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/boo-yuan/wnacg-downloader")))
+        
+        self.aboutCard = SettingCard(
+            icon=FIF.INFO,
+            title="当前版本与版权",
+            content="v1.0.0 (Release) | Copyright © 2026 boo-yuan. All rights reserved.",
+            parent=self.aboutGroup
+        )
+        
+        self.aboutGroup.addSettingCard(self.helpCard)
+        self.aboutGroup.addSettingCard(self.aboutCard)
+        self.expandLayout.addWidget(self.aboutGroup)
+        
     def _on_domains_fetched(self, domains):
         self.domainCard.setContent("常被墙可随时更换 (获取最新域名请访问发布页 https://wnacg01.link/)")
         existing = [self.domainCard.comboBox.itemText(i) for i in range(self.domainCard.comboBox.count())]
@@ -260,3 +339,15 @@ class SettingInterface(ScrollArea):
             cfg.download_dir = directory
             cfg.save()
             self.downloadDirCard.setContent(str(Path(directory).absolute()))
+
+    def _on_max_tasks_changed(self, value: int):
+        cfg.max_concurrent_tasks = value
+        cfg.save()
+        
+    def _on_max_images_changed(self, value: int):
+        cfg.max_concurrent_images = value
+        cfg.save()
+        
+    def _on_download_delay_changed(self, value: float):
+        cfg.download_delay = value
+        cfg.save()

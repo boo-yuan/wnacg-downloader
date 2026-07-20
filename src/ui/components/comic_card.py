@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QImage, QAction, QContextMenuEvent
-from PySide6.QtWidgets import QVBoxLayout, QLabel, QMenu
-from qfluentwidgets import PrimaryPushButton, CardWidget, FluentIcon as FIF
+from PySide6.QtGui import QPixmap, QImage, QAction, QContextMenuEvent, QColor
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QMenu
+from qfluentwidgets import PrimaryPushButton, CardWidget, CaptionLabel, FluentIcon as FIF
 from core.models import Comic, TaskStatus
 import core.db as db
 from ui.components.cover_manager import cover_manager
@@ -12,10 +12,11 @@ class ComicCard(CardWidget):
     def __init__(self, comic: Comic, parent=None):
         super().__init__(parent)
         self.comic = comic
-        self.setFixedSize(220, 340)
+        self.setFixedWidth(220)
         
         self.vbox = QVBoxLayout(self)
         self.vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.vbox.setSpacing(6)
         
         self._is_selected = False
         
@@ -25,10 +26,24 @@ class ComicCard(CardWidget):
         self.coverLabel.setScaledContents(True)
         self.coverLabel.setStyleSheet("background-color: rgba(0,0,0,0.05); border-radius: 8px;")
         
-        # 标题
+        # 标题 (完整显示，自适应高度)
         self.titleLabel = QLabel(comic.title, self)
         self.titleLabel.setWordWrap(True)
-        self.titleLabel.setFixedHeight(40)
+        # 强制设置最小高度，防止在布局自适应时与封面发生浮动重叠
+        font_metrics = self.titleLabel.fontMetrics()
+        rect = font_metrics.boundingRect(0, 0, 196, 9999, Qt.TextFlag.TextWordWrap, comic.title)
+        self.titleLabel.setMinimumHeight(rect.height() + 5)
+        
+        # 信息行
+        self.infoLayout = QHBoxLayout()
+        self.infoLayout.setContentsMargins(0, 0, 0, 0)
+        self.picCountLabel = CaptionLabel(comic.pic_count, self)
+        self.picCountLabel.setTextColor(QColor('#009faa'))
+        self.dateLabel = CaptionLabel(comic.date, self)
+        self.dateLabel.setTextColor(QColor('#888888'))
+        self.infoLayout.addWidget(self.picCountLabel)
+        self.infoLayout.addStretch(1)
+        self.infoLayout.addWidget(self.dateLabel)
         
         # 一键下载按钮
         self.downloadBtn = PrimaryPushButton("一键下载", self)
@@ -37,6 +52,7 @@ class ComicCard(CardWidget):
         
         self.vbox.addWidget(self.coverLabel)
         self.vbox.addWidget(self.titleLabel)
+        self.vbox.addLayout(self.infoLayout)
         self.vbox.addWidget(self.downloadBtn)
         
         self.loader = None

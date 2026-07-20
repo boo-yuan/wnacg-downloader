@@ -1,7 +1,7 @@
 import asyncio
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel
-from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, InfoBar, InfoBarPosition, CommandBar
+from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont
 from core.crawler import WnacgCrawler
 from core.downloader import downloader_manager
 from core.models import Comic
@@ -75,6 +75,25 @@ class HomeInterface(QWidget):
         downloader_manager.signals.task_status_changed.connect(self._on_task_state_changed)
         self._init_bottom_layout()
         
+        # 返回顶部悬浮按钮
+        self.backToTopBtn = PrimaryToolButton(FIF.UP, self)
+        setFont(self.backToTopBtn)
+        self.backToTopBtn.setFixedSize(40, 40)
+        self.backToTopBtn.hide()
+        self.backToTopBtn.setStyleSheet("PrimaryToolButton { border-radius: 20px; background-color: #009faa; border: none; } PrimaryToolButton:hover { background-color: #008b96; }")
+        self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
+        self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        
+    def _on_scroll(self, value):
+        if value > 300:
+            self.backToTopBtn.show()
+        else:
+            self.backToTopBtn.hide()
+            
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.backToTopBtn.move(self.width() - 80, self.height() - 100)
+        
     def _on_task_state_changed(self, *args):
         for i in range(self.flowLayout.count()):
             item = self.flowLayout.itemAt(i)
@@ -131,8 +150,8 @@ class HomeInterface(QWidget):
                 
             text = str(p)
             btn = PushButton(text, self.bottomWidget)
-            w = max(36, 20 + len(text) * 8)
-            btn.setFixedSize(w, 32)
+            btn.setMinimumWidth(36)
+            btn.setFixedHeight(32)
             
             if p == self.current_page:
                 btn.setStyleSheet("background-color: #009faa; color: white; border: none; border-radius: 4px;")
