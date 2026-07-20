@@ -5,7 +5,8 @@ import json
 from typing import List, Optional
 from core.models import DownloadTask, Comic, TaskStatus
 
-DB_PATH = Path("tasks.db")
+DB_PATH = Path("data/tasks.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)

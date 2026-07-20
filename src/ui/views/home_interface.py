@@ -53,6 +53,13 @@ class HomeInterface(QWidget):
         topLayout.addWidget(self.searchBar, 0, Qt.AlignmentFlag.AlignCenter)
         self.vbox.addLayout(topLayout)
         
+        # 提示文本
+        hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量下载", self)
+        hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
+        hintLayout = QHBoxLayout()
+        hintLayout.addWidget(hintLabel, 0, Qt.AlignmentFlag.AlignCenter)
+        self.vbox.addLayout(hintLayout)
+        
         # 中间滚动区域与流式布局 (展示卡片)
         self.scrollArea = QScrollArea(self)
         self.scrollArea.setWidgetResizable(True)

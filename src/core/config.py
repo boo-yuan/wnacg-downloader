@@ -3,7 +3,8 @@ from enum import Enum
 from pathlib import Path
 from pydantic import BaseModel, Field
 
-CONFIG_FILE = Path("config.json")
+CONFIG_FILE = Path("data/config.json")
+CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class ProxyMode(str, Enum):
     DIRECT = "direct"

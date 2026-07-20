@@ -144,6 +144,13 @@ class DownloadInterface(QWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
         
+        # 提示文本
+        hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量操作；双击卡片快速暂停/恢复", self)
+        hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
+        hintLayout = QHBoxLayout()
+        hintLayout.addWidget(hintLabel, 0, Qt.AlignmentFlag.AlignCenter)
+        self.vbox.addLayout(hintLayout)
+        
         self.scrollArea = QScrollArea(self)
         self.scrollArea.setWidgetResizable(True)
         self.scrollArea.setStyleSheet("QScrollArea { border: none; background: transparent; }")

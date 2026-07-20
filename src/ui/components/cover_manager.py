@@ -8,7 +8,7 @@ from curl_cffi import requests
 from core.config import cfg
 from core.logger import logger
 
-TEMP_DIR = ".temp_covers"
+TEMP_DIR = "data/.temp_covers"
 
 def _cleanup_covers():
     try:
