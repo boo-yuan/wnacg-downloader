@@ -72,7 +72,7 @@ cd wnacg-downloader
 
 # 2. 极速安装并运行
 uv run src/main.py
-`
+```
 
 ---
 
