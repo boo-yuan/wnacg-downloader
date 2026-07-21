@@ -187,5 +187,3 @@ app.log
 config.json
 tasks.db
 .temp_covers/
-# Release Notes
-RELEASE_NOTES.md
