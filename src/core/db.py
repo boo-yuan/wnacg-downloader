@@ -16,6 +16,7 @@ def get_conn():
 def init_db():
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,

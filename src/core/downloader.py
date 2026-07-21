@@ -9,6 +9,7 @@ from core.logger import logger
 import core.db as db
 import uuid
 import PIL.Image
+import random
 
 def is_valid_image(file_path: Path) -> bool:
     if not file_path.exists() or file_path.stat().st_size == 0:
@@ -16,6 +17,10 @@ def is_valid_image(file_path: Path) -> bool:
     try:
         with PIL.Image.open(file_path) as img:
             img.verify()
+        # verify() only checks header. We must load() to catch truncated (half-downloaded) images.
+        # PIL.ImageFile.LOAD_TRUNCATED_IMAGES is False by default, so load() will raise OSError if truncated.
+        with PIL.Image.open(file_path) as img:
+            img.load()
         return True
     except Exception:
         return False
@@ -238,7 +243,7 @@ class DownloaderWorker(QThread):
                     async with sem:
                         for attempt in range(3):
                             if cancel_event.is_set(): return False
-                            raw_url = await WnacgCrawler.get_raw_image_url(view_url)
+                            raw_url = await WnacgCrawler.get_raw_image_url(view_url, client)
                             if raw_url:
                                 db.update_image_raw_url(task_id, idx, raw_url)
                                 break
@@ -273,7 +278,8 @@ class DownloaderWorker(QThread):
                 
                 async with sem:
                     if cfg.download_delay > 0:
-                        await asyncio.sleep(cfg.download_delay)
+                        jitter = random.uniform(0.7, 1.3)
+                        await asyncio.sleep(cfg.download_delay * jitter)
                     for attempt in range(3):
                         if cancel_event.is_set(): return False
                         try:

@@ -1,0 +1,42 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install "PySide6>=6.5.0" "qfluentwidgets>=1.5.0" "beautifulsoup4>=4.12.0" "curl_cffi>=0.7.0" "pillow>=10.0.0" "pydantic>=2.5.0" "requests>=2.31.0"
+        pip install pyinstaller
+        
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --onedir --windowed --name "WNACG-Downloader" "src/main.py"
+        
+    - name: Archive Release
+      uses: actions/upload-artifact@v4
+      with:
+        name: WNACG-Downloader-Windows
+        path: dist/WNACG-Downloader
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: dist/WNACG-Downloader/**
+        generate_release_notes: true

@@ -10,6 +10,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from curl_cffi.requests import Session
 from core.config import cfg, ProxyMode
+from core.updater import Updater
 
 class LineEditSettingCard(SettingCard):
     """ Custom setting card for line edit input """
@@ -107,6 +108,19 @@ class DomainFetchWorker(QThread):
         except Exception:
             pass
         return domains
+
+class UpdateCheckWorker(QThread):
+    finished_signal = Signal(dict)
+    
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(Updater.check_update())
+            loop.close()
+            self.finished_signal.emit(result)
+        except Exception as e:
+            self.finished_signal.emit({"error": str(e)})
 
 class SettingInterface(ScrollArea):
     def __init__(self, parent=None):
@@ -272,7 +286,7 @@ class SettingInterface(ScrollArea):
     def _init_about_settings(self):
         self.aboutGroup = SettingCardGroup("关于", self.scrollWidget)
         
-        self.helpCard = PrimaryPushSettingCard(
+        self.helpCard = PushSettingCard(
             text="前往 GitHub",
             icon=FIF.GITHUB,
             title="WNACG Downloader",
@@ -280,6 +294,15 @@ class SettingInterface(ScrollArea):
             parent=self.aboutGroup
         )
         self.helpCard.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/boo-yuan/wnacg-downloader")))
+        
+        self.updateCard = PrimaryPushSettingCard(
+            text="检查更新",
+            icon=FIF.UPDATE,
+            title="检查新版本",
+            content="一键从 GitHub 拉取最新版本更新",
+            parent=self.aboutGroup
+        )
+        self.updateCard.clicked.connect(self._check_update)
         
         self.aboutCard = SettingCard(
             icon=FIF.INFO,
@@ -289,6 +312,7 @@ class SettingInterface(ScrollArea):
         )
         
         self.aboutGroup.addSettingCard(self.helpCard)
+        self.aboutGroup.addSettingCard(self.updateCard)
         self.aboutGroup.addSettingCard(self.aboutCard)
         self.expandLayout.addWidget(self.aboutGroup)
         
@@ -351,3 +375,32 @@ class SettingInterface(ScrollArea):
     def _on_download_delay_changed(self, value: float):
         cfg.download_delay = value
         cfg.save()
+
+    def _check_update(self):
+        self.updateCard.button.setText("检查中...")
+        self.updateCard.button.setEnabled(False)
+        self.updateWorker = UpdateCheckWorker(self)
+        self.updateWorker.finished_signal.connect(self._on_update_checked)
+        self.updateWorker.start()
+
+    def _on_update_checked(self, result: dict):
+        self.updateCard.button.setText("检查更新")
+        self.updateCard.button.setEnabled(True)
+        
+        from qfluentwidgets import MessageBox
+        if "error" in result:
+            w = MessageBox("检查更新失败", f"无法连接到更新服务器：\n{result['error']}", self.window())
+            w.exec()
+            return
+            
+        if result.get("has_update"):
+            w = MessageBox(f"发现新版本 {result.get('latest_version')}", f"更新日志：\n{result.get('release_notes')}\n\n是否立即下载更新？（已启用免翻墙加速）", self.window())
+            if w.exec():
+                url = result.get('download_url')
+                if url:
+                    from PySide6.QtGui import QDesktopServices
+                    from PySide6.QtCore import QUrl
+                    QDesktopServices.openUrl(QUrl(url))
+        else:
+            w = MessageBox("已是最新版本", f"当前版本 {Updater.CURRENT_VERSION} 已是最新，无需更新。", self.window())
+            w.exec()
