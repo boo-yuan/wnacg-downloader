@@ -180,15 +180,15 @@ class SettingInterface(ScrollArea):
         self.maxTasksCard.spinBox.setValue(cfg.max_concurrent_tasks)
         self.maxTasksCard.spinBox.valueChanged.connect(self._on_max_tasks_changed)
         
-        self.maxImagesCard = SpinBoxSettingCard(
-            icon=FIF.PHOTO,
-            title="单任务并发图片数",
-            content="每个任务同时下载的图片数量（过高容易被封 IP）",
+        self.globalConnectionsCard = SpinBoxSettingCard(
+            icon=FIF.IOT,
+            title="全局最大并发连接数",
+            content="控制底层的最高并发网络连接数（建议 4-16）",
             parent=self.concurrentGroup
         )
-        self.maxImagesCard.spinBox.setRange(1, 20)
-        self.maxImagesCard.spinBox.setValue(cfg.max_concurrent_images)
-        self.maxImagesCard.spinBox.valueChanged.connect(self._on_max_images_changed)
+        self.globalConnectionsCard.spinBox.setRange(1, 32)
+        self.globalConnectionsCard.spinBox.setValue(cfg.global_max_connections)
+        self.globalConnectionsCard.spinBox.valueChanged.connect(self._on_global_connections_changed)
         
         self.downloadDelayCard = DoubleSpinBoxSettingCard(
             icon=FIF.HISTORY,
@@ -202,7 +202,7 @@ class SettingInterface(ScrollArea):
         self.downloadDelayCard.spinBox.valueChanged.connect(self._on_download_delay_changed)
         
         self.concurrentGroup.addSettingCard(self.maxTasksCard)
-        self.concurrentGroup.addSettingCard(self.maxImagesCard)
+        self.concurrentGroup.addSettingCard(self.globalConnectionsCard)
         self.concurrentGroup.addSettingCard(self.downloadDelayCard)
         self.expandLayout.addWidget(self.concurrentGroup)
 
@@ -368,8 +368,8 @@ class SettingInterface(ScrollArea):
         cfg.max_concurrent_tasks = value
         cfg.save()
         
-    def _on_max_images_changed(self, value: int):
-        cfg.max_concurrent_images = value
+    def _on_global_connections_changed(self, value: int):
+        cfg.global_max_connections = value
         cfg.save()
         
     def _on_download_delay_changed(self, value: float):

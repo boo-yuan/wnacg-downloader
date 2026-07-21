@@ -20,7 +20,7 @@ class AppConfig(BaseModel):
     download_format: str = Field(default="jpg", description="下载格式：original / jpg / png / webp")
     auto_start_download: bool = Field(default=True, description="加入下载队列后是否立即下载")
     max_concurrent_tasks: int = Field(default=2, description="同时下载的最大任务数")
-    max_concurrent_images: int = Field(default=4, description="每个任务同时下载的最大图片数")
+    global_max_connections: int = Field(default=8, description="全局最大并发下载连接数")
     download_delay: float = Field(default=1.0, description="每张图片下载间的延迟(秒)")
 
     @property

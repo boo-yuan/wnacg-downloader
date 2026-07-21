@@ -39,6 +39,8 @@ class DownloaderWorker(QThread):
         self._loop = None
         self._active_tasks = {} # task_id -> asyncio.Task
         self._cancel_events = {} # task_id -> asyncio.Event
+        self._global_semaphore = None
+        self._global_pacer_lock = None
         
         # Reset any leftover DOWNLOADING tasks to PAUSED on startup
         db.reset_downloading_tasks()
@@ -182,7 +184,7 @@ class DownloaderWorker(QThread):
                 self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
                 return
 
-            sem = asyncio.Semaphore(cfg.max_concurrent_images)
+
             
             def process_and_save_image(temp_path: Path, save_dir: Path, idx: int, raw_url: str) -> bool:
                 try:
@@ -238,9 +240,14 @@ class DownloaderWorker(QThread):
                 
                 if cancel_event.is_set(): return False
                 
-                # Fetch raw url if missing
-                if not raw_url:
-                    async with sem:
+                async with self._global_semaphore:
+                    async with self._global_pacer_lock:
+                        if cfg.download_delay > 0:
+                            jitter = random.uniform(0.7, 1.3)
+                            await asyncio.sleep(cfg.download_delay * jitter)
+                            
+                    # Fetch raw url if missing
+                    if not raw_url:
                         for attempt in range(3):
                             if cancel_event.is_set(): return False
                             raw_url = await WnacgCrawler.get_raw_image_url(view_url, client)
@@ -276,10 +283,11 @@ class DownloaderWorker(QThread):
                 # Download to temp file
                 temp_path = Path(task.save_path) / f"temp_{idx}_{uuid.uuid4().hex[:8]}.tmp"
                 
-                async with sem:
-                    if cfg.download_delay > 0:
-                        jitter = random.uniform(0.7, 1.3)
-                        await asyncio.sleep(cfg.download_delay * jitter)
+                async with self._global_semaphore:
+                    async with self._global_pacer_lock:
+                        if cfg.download_delay > 0:
+                            jitter = random.uniform(0.7, 1.3)
+                            await asyncio.sleep(cfg.download_delay * jitter)
                     for attempt in range(3):
                         if cancel_event.is_set(): return False
                         try:
@@ -339,6 +347,9 @@ class DownloaderWorker(QThread):
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        
+        self._global_semaphore = asyncio.Semaphore(cfg.global_max_connections)
+        self._global_pacer_lock = asyncio.Lock()
         
         # We don't automatically resume PENDING here. UI will trigger resume or we can auto resume.
         # But for robustness, let's auto resume PENDING
