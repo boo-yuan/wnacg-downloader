@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # 🤖 WNACG Downloader (v1.0.0)
 
@@ -54,18 +54,18 @@ WNACG Downloader 不仅仅是一个美观的漫画下载管理器，它更是专
 ### 选项二：极客玩家 (源码运行)
 推荐使用现代化的 Python 包管理器 [uv](https://github.com/astral-sh/uv) 来运行本项目，以获得极速的依赖解析体验。
 
-`ash
+```bash
 # 1. 克隆代码仓库
-git clone https://github.com/your_github_username/wnacg-downloader.git
+git clone https://github.com/boo-yuan/wnacg-downloader.git
 cd wnacg-downloader
 
 # 2. 极速安装并运行
 uv run src/main.py
-`
+```
 
 ## ⌨️ 高效交互指南 (Interactive Tips)
-*   鼠标框选 / Shift 连选 / Ctrl+A 全选：均已在列表页原生支持，方便您进行批量的暂停或删除。
-*   双击卡片：在下载任务列表中，直接双击卡片中心区域即可快速“暂停 / 恢复”任务。
+*   `鼠标框选 / Shift 连选 / Ctrl+A 全选`：均已在列表页原生支持，方便您进行批量的暂停或删除。
+*   `双击卡片`：在下载任务列表中，直接双击卡片中心区域即可快速“暂停 / 恢复”任务。
 
 ## 📄 开源协议 (License)
 本项目遵循 MIT 开源协议。详情请参阅 [LICENSE](LICENSE) 文件。
