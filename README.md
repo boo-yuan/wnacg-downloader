@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # 🤖 WNACG Downloader (v1.0.0)
 
@@ -62,14 +62,14 @@ WNACG Downloader 是为了解决漫画爱好者“下载难、防屏蔽难、管
 ### 选项二：极客玩家 (源码运行)
 推荐使用现代化的 Python 包管理器 [uv](https://github.com/astral-sh/uv) 来运行本项目，以获得极速的依赖解析体验。
 
-`ash
+```bash
 # 1. 克隆代码仓库
 git clone https://github.com/boo-yuan/wnacg-downloader.git
 cd wnacg-downloader
 
 # 2. 极速安装并运行
 uv run src/main.py
-`
+```
 
 ---
 
