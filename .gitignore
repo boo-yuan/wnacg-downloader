@@ -180,9 +180,8 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-.agents
-
 # Application specific runtime files
+system_prompt.md
 app.log
 config.json
 tasks.db
