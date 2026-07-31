@@ -358,6 +358,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         )
         self.domainCard.comboBox.setText(cfg.domain)
         self.domainCard.comboBox.textChanged.connect(self._on_domain_changed)
+        if hasattr(self.domainCard.comboBox, 'currentTextChanged'):
+            self.domainCard.comboBox.currentTextChanged.connect(self._on_domain_changed)
         
         self.fetchDomainCard = PushSettingCard(
             text="获取",
