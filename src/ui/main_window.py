@@ -6,7 +6,7 @@ from core.downloader import downloader_manager
 
 from ui.views.home_interface import HomeInterface
 from ui.views.download_interface import DownloadInterface
-from ui.views.setting_interface import SettingInterface
+from ui.views.setting_interface import NetworkSettingInterface, DownloadSettingInterface, AboutSettingInterface
 
 class MainWindow(FluentWindow):
     def __init__(self):
@@ -16,7 +16,9 @@ class MainWindow(FluentWindow):
         # 初始化子页面
         self.homeInterface = HomeInterface(self)
         self.downloadInterface = DownloadInterface(self)
-        self.settingInterface = SettingInterface(self)
+        self.networkSettingInterface = NetworkSettingInterface(self)
+        self.downloadSettingInterface = DownloadSettingInterface(self)
+        self.aboutSettingInterface = AboutSettingInterface(self)
         
         self.initNavigation()
         
@@ -33,10 +35,16 @@ class MainWindow(FluentWindow):
         
         # 将设置页放置于导航栏底部
         self.addSubInterface(
-            self.settingInterface, FIF.SETTING, '全局设置', NavigationItemPosition.BOTTOM)
+            self.networkSettingInterface, FIF.GLOBE, '网络代理')
+        self.addSubInterface(
+            self.downloadSettingInterface, FIF.SETTING, '下载设置')
+        self.addSubInterface(
+            self.aboutSettingInterface, FIF.INFO, '系统关于')
             
         try:
-            self.navigationInterface.setExpandWidth(180)
+            self.navigationInterface.setExpandWidth(220)
+            from qfluentwidgets import setFont
+            setFont(self.navigationInterface, 11)
         except Exception:
             pass
             

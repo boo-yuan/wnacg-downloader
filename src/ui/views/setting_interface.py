@@ -102,7 +102,6 @@ class DomainFetchWorker(QThread):
                 if r.status_code == 200:
                     soup = BeautifulSoup(r.text, 'html.parser')
                     lis = soup.select('.content-top ul li')
-                    # Ignore first 2 and last 1 li elements as per user instruction
                     if len(lis) > 3:
                         lis = lis[2:-1]
                         
@@ -133,11 +132,10 @@ class UpdateCheckWorker(QThread):
         except Exception as e:
             self.finished_signal.emit({"error": str(e)})
 
-class SettingInterface(ScrollArea):
+
+class BaseSettingInterface(ScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
-        self.setObjectName("SettingInterface")
-        
         self.scrollWidget = QWidget()
         self.expandLayout = ExpandLayout(self.scrollWidget)
         
@@ -145,11 +143,15 @@ class SettingInterface(ScrollArea):
         self.setWidget(self.scrollWidget)
         self.setWidgetResizable(True)
         self.setStyleSheet("QScrollArea, .QScrollArea > QWidget > QWidget { background: transparent; }")
-        
+
+
+class NetworkSettingInterface(BaseSettingInterface):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.setObjectName("NetworkSettingInterface")
         self._init_proxy_settings()
         self._init_system_settings()
-        self._init_about_settings()
-        
+
     def _init_proxy_settings(self):
         self.proxyGroup = SettingCardGroup("网络与代理设置", self.scrollWidget)
         
@@ -217,7 +219,36 @@ class SettingInterface(ScrollArea):
         self.concurrentGroup.addSettingCard(self.downloadDelayCard)
         self.expandLayout.addWidget(self.concurrentGroup)
 
-        self.sysGroup = SettingCardGroup("下载与系统设置", self.scrollWidget)
+    def _on_proxy_mode_changed(self, index: int):
+        modes = [ProxyMode.SYSTEM, ProxyMode.DIRECT, ProxyMode.CUSTOM]
+        cfg.proxy_mode = modes[index]
+        cfg.save()
+        
+    def _on_custom_proxy_changed(self, text: str):
+        cfg.custom_proxy = text
+        cfg.save()
+
+    def _on_max_tasks_changed(self, value: int):
+        cfg.max_concurrent_tasks = value
+        cfg.save()
+        
+    def _on_global_connections_changed(self, value: int):
+        cfg.global_max_connections = value
+        cfg.save()
+        
+    def _on_download_delay_changed(self, value: float):
+        cfg.download_delay = value
+        cfg.save()
+
+
+class DownloadSettingInterface(BaseSettingInterface):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.setObjectName("DownloadSettingInterface")
+        self._init_download_settings()
+
+    def _init_download_settings(self):
+        self.sysGroup = SettingCardGroup("下载与存储设置", self.scrollWidget)
         
         self.downloadDirCard = PushSettingCard(
             text="选择文件夹",
@@ -286,15 +317,6 @@ class SettingInterface(ScrollArea):
         
         self.sysGroup.addSettingCard(self.autoStartCard)
         
-        self.logCard = PushSettingCard(
-            text="查看日志",
-            icon=FIF.DOCUMENT,
-            title="程序运行日志",
-            content="记录了程序的错误和重点信息",
-            parent=self.sysGroup
-        )
-        self.logCard.clicked.connect(self._open_log_file)
-        
         self.domainCard = EditableComboBoxSettingCard(
             icon=FIF.GLOBE,
             title="站点主域名",
@@ -316,41 +338,40 @@ class SettingInterface(ScrollArea):
         
         self.sysGroup.addSettingCard(self.domainCard)
         self.sysGroup.addSettingCard(self.fetchDomainCard)
-        self.sysGroup.addSettingCard(self.logCard)
         self.expandLayout.addWidget(self.sysGroup)
+
+    def _on_download_naming_changed(self, index: int):
+        modes = ["original", "sequential"]
+        cfg.download_naming = modes[index]
+        cfg.save()
         
-    def _init_about_settings(self):
-        self.aboutGroup = SettingCardGroup("关于", self.scrollWidget)
+    def _on_download_format_changed(self, index: int):
+        formats = ["original", "jpg", "png", "webp"]
+        cfg.download_format = formats[index]
+        cfg.save()
         
-        self.helpCard = PushSettingCard(
-            text="前往 GitHub",
-            icon=FIF.GITHUB,
-            title="WNACG Downloader",
-            content="一款采用 Fluent 设计语言构建的高性能、跨平台 WNACG 漫画离线下载工具",
-            parent=self.aboutGroup
-        )
-        self.helpCard.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/boo-yuan/wnacg-downloader")))
+    def _on_auto_start_changed(self, checked: bool):
+        cfg.auto_start_download = checked
+        cfg.save()
         
-        self.updateCard = PrimaryPushSettingCard(
-            text="检查更新",
-            icon=FIF.UPDATE,
-            title="检查新版本",
-            content="一键从 GitHub 拉取最新版本更新",
-            parent=self.aboutGroup
-        )
-        self.updateCard.clicked.connect(self._check_update)
+    def _on_pack_zip_changed(self, checked: bool):
+        cfg.pack_to_zip = checked
+        cfg.save()
         
-        self.aboutCard = SettingCard(
-            icon=FIF.INFO,
-            title="当前版本与版权",
-            content="v1.0.0 (Release) | Copyright © 2026 boo-yuan. All rights reserved.",
-            parent=self.aboutGroup
-        )
+    def _on_delete_original_changed(self, checked: bool):
+        cfg.delete_original_after_pack = checked
+        cfg.save()
         
-        self.aboutGroup.addSettingCard(self.helpCard)
-        self.aboutGroup.addSettingCard(self.updateCard)
-        self.aboutGroup.addSettingCard(self.aboutCard)
-        self.expandLayout.addWidget(self.aboutGroup)
+    def _on_download_dir_clicked(self):
+        directory = QFileDialog.getExistingDirectory(self, "选择下载保存目录", cfg.download_dir)
+        if directory:
+            cfg.download_dir = directory
+            cfg.save()
+            self.downloadDirCard.setContent(str(Path(directory).absolute()))
+            
+    def _on_domain_changed(self, text: str):
+        cfg.domain = text
+        cfg.save()
         
     def _fetch_latest_domains(self):
         self.fetchDomainCard.button.setText("获取中...")
@@ -382,67 +403,65 @@ class SettingInterface(ScrollArea):
             self.domainCard.comboBox.setCurrentIndex(self.domainCard.comboBox.count() - 1)
         else:
             InfoBar.warning("已是最新", "发布页中的最新域名已全部存在于列表中", parent=self.window(), position=InfoBarPosition.TOP)
+
+
+class AboutSettingInterface(BaseSettingInterface):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.setObjectName("AboutSettingInterface")
+        self._init_about_settings()
+
+    def _init_about_settings(self):
+        self.aboutGroup = SettingCardGroup("关于与系统", self.scrollWidget)
         
+        self.logCard = PushSettingCard(
+            text="查看日志",
+            icon=FIF.DOCUMENT,
+            title="程序运行日志",
+            content="记录了程序的错误和重点信息",
+            parent=self.aboutGroup
+        )
+        self.logCard.clicked.connect(self._open_log_file)
+        
+        self.helpCard = PushSettingCard(
+            text="前往 GitHub",
+            icon=FIF.GITHUB,
+            title="WNACG Downloader",
+            content="一款采用 Fluent 设计语言构建的高性能、跨平台 WNACG 漫画离线下载工具",
+            parent=self.aboutGroup
+        )
+        self.helpCard.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/boo-yuan/wnacg-downloader")))
+        
+        self.updateCard = PrimaryPushSettingCard(
+            text="检查更新",
+            icon=FIF.UPDATE,
+            title="检查新版本",
+            content="一键从 GitHub 拉取最新版本更新",
+            parent=self.aboutGroup
+        )
+        self.updateCard.clicked.connect(self._check_update)
+        
+        self.aboutCard = SettingCard(
+            icon=FIF.INFO,
+            title="当前版本",
+            content="v1.0.0 (Release) | 本程序全权由 Antigravity 2.0 与 Gemini 3.1 Pro 强力驱动开发",
+            parent=self.aboutGroup
+        )
+        
+        self.aboutGroup.addSettingCard(self.logCard)
+        self.aboutGroup.addSettingCard(self.helpCard)
+        self.aboutGroup.addSettingCard(self.updateCard)
+        self.aboutGroup.addSettingCard(self.aboutCard)
+        self.expandLayout.addWidget(self.aboutGroup)
+
     def _open_log_file(self):
         log_path = Path("app.log").absolute()
         if not log_path.exists():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write("暂无日志记录\n")
-        os.startfile(log_path)
-        
-    def _on_proxy_mode_changed(self, index: int):
-        modes = [ProxyMode.SYSTEM, ProxyMode.DIRECT, ProxyMode.CUSTOM]
-        cfg.proxy_mode = modes[index]
-        cfg.save()
-        
-    def _on_custom_proxy_changed(self, text: str):
-        cfg.custom_proxy = text
-        cfg.save()
-        
-    def _on_domain_changed(self, text: str):
-        cfg.domain = text
-        cfg.save()
-        
-    def _on_download_naming_changed(self, index: int):
-        modes = ["original", "sequential"]
-        cfg.download_naming = modes[index]
-        cfg.save()
-        
-    def _on_download_format_changed(self, index: int):
-        formats = ["original", "jpg", "png", "webp"]
-        cfg.download_format = formats[index]
-        cfg.save()
-        
-    def _on_auto_start_changed(self, checked: bool):
-        cfg.auto_start_download = checked
-        cfg.save()
-        
-    def _on_pack_zip_changed(self, checked: bool):
-        cfg.pack_to_zip = checked
-        cfg.save()
-        
-    def _on_delete_original_changed(self, checked: bool):
-        cfg.delete_original_after_pack = checked
-        cfg.save()
-        
-    def _on_download_dir_clicked(self):
-        directory = QFileDialog.getExistingDirectory(self, "选择下载保存目录", cfg.download_dir)
-        if directory:
-            cfg.download_dir = directory
-            cfg.save()
-            self.downloadDirCard.setContent(str(Path(directory).absolute()))
-
-    def _on_max_tasks_changed(self, value: int):
-        cfg.max_concurrent_tasks = value
-        cfg.save()
-        
-    def _on_global_connections_changed(self, value: int):
-        cfg.global_max_connections = value
-        cfg.save()
-        
-    def _on_download_delay_changed(self, value: float):
-        cfg.download_delay = value
-        cfg.save()
+            os.startfile(log_path)
+        else:
+            os.startfile(log_path)
 
     def _check_update(self):
         self.updateCard.button.setText("检查中...")
