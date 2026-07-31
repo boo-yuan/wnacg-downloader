@@ -226,9 +226,10 @@ class DownloaderWorker(QThread):
 
 
             
-            def process_and_save_image(temp_path: Path, save_dir: Path, idx: int, raw_url: str) -> bool:
+            def process_and_save_image(image_data: bytes, save_dir: Path, idx: int, raw_url: str) -> bool:
                 try:
-                    with PIL.Image.open(temp_path) as img:
+                    import io
+                    with PIL.Image.open(io.BytesIO(image_data)) as img:
                         target_format = cfg.download_format
                         img_format = img.format.lower() if img.format else "jpg"
                         if target_format == "original":
@@ -261,15 +262,13 @@ class DownloaderWorker(QThread):
                         
                         out_img.save(final_path, format="JPEG" if target_format == "jpg" else target_format.upper(), **save_kwargs)
                         
-                    temp_path.unlink()
                     if is_valid_image(final_path):
                         return True
                     else:
                         final_path.unlink(missing_ok=True)
                         return False
                 except Exception as e:
-                    logger.error(f"Image processing failed for {temp_path}: {e}")
-                    temp_path.unlink(missing_ok=True)
+                    logger.error(f"Image processing failed for {raw_url}: {e}")
                     return False
             
             async def download_image(img_dict):
@@ -319,9 +318,7 @@ class DownloaderWorker(QThread):
                 
                 if cancel_event.is_set(): return False
                 
-                # Download to temp file
-                temp_path = Path(task.save_path) / f"temp_{idx}_{uuid.uuid4().hex[:8]}.tmp"
-                
+                # No temp file needed, process directly from memory
                 async with task_semaphore:
                     if cfg.download_delay > 0:
                         jitter = random.uniform(0.7, 1.3)
@@ -332,11 +329,8 @@ class DownloaderWorker(QThread):
                         try:
                             resp = await client.get(raw_url, timeout=30.0)
                             if resp.status_code == 200:
-                                with open(temp_path, "wb") as f:
-                                    f.write(resp.content)
-                                    
                                 success = await asyncio.to_thread(
-                                    process_and_save_image, temp_path, Path(task.save_path), idx, raw_url
+                                    process_and_save_image, resp.content, Path(task.save_path), idx, raw_url
                                 )
                                 if success:
                                     db.update_image_status(task_id, idx, 'downloaded')
