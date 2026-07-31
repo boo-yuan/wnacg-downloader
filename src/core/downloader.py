@@ -44,14 +44,34 @@ class DownloaderWorker(QThread):
         # Reset any leftover DOWNLOADING tasks to PAUSED on startup
         db.reset_downloading_tasks()
         
-        # Check for deleted folders for all tasks
+        # Check for deleted folders for completed tasks
         tasks = db.get_all_tasks()
         for task in tasks:
-            save_path = Path(task.save_path)
-            if not save_path.exists() and not save_path.with_suffix('.zip').exists():
-                db.delete_task(task.id)
+            if task.status == TaskStatus.COMPLETED:
+                save_path = Path(task.save_path)
+                if not save_path.exists() and not save_path.with_suffix('.zip').exists():
+                    db.delete_task(task.id)
 
     def add_task(self, comic: Comic) -> DownloadTask:
+        existing = db.get_task_by_aid(comic.aid)
+        if existing:
+            if existing.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
+                return existing
+            elif existing.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
+                self.resume_task(existing.id)
+                return existing
+            elif existing.status == TaskStatus.COMPLETED:
+                existing.status = TaskStatus.PENDING if cfg.auto_start_download else TaskStatus.PAUSED
+                existing.downloaded_images = 0
+                existing.progress = 0
+                existing.error_message = ""
+                db.save_task(existing)
+                self.signals.task_status_changed.emit(existing.id, existing.status)
+                self.signals.task_progress.emit(existing.id, 0, existing.total_images)
+                if cfg.auto_start_download and self._loop:
+                    self.resume_task(existing.id)
+                return existing
+
         task_id = str(uuid.uuid4())
         save_path = Path(cfg.download_dir) / self._clean_filename(comic.title)
         
