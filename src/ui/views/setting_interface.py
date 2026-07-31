@@ -352,8 +352,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.domainCard = EditableComboBoxSettingCard(
             icon=FIF.GLOBE,
             title="站点主域名",
-            content="常被墙可随时更换，默认支持 www.wnacg.com 和 www.wnacg.ru",
-            texts=["www.wnacg.com", "www.wnacg.ru"],
+            content="常被墙可随时更换，支持下拉选择备用域名",
+            texts=cfg.backup_domains,
             parent=self.sysGroup
         )
         self.domainCard.comboBox.setText(cfg.domain)
@@ -435,6 +435,10 @@ class DownloadSettingInterface(BaseSettingInterface):
                 existing.append(d)
                 added += 1
                 
+        if added > 0:
+            cfg.backup_domains = existing
+            cfg.save()
+            
         from core.crawler import WnacgCrawler
         WnacgCrawler._mirrors = existing
                 
