@@ -42,6 +42,7 @@ class HomeInterface(QWidget):
         self._preloading_pages = set()
         self.workers = {}
         self.card_map = {}
+        self._old_workers = []
         
         # 顶部搜索栏
         self.searchBar = SearchLineEdit(self)
@@ -276,12 +277,21 @@ class HomeInterface(QWidget):
             if cache_key in self._preloading_pages:
                 self._preloading_pages.remove(cache_key)
         else:
+            if self.worker is not None:
+                self.worker.result_signal.disconnect()
+                self.worker.error_signal.disconnect()
+                self._old_workers.append(self.worker)
+                
             self.worker = SearchWorker(self.current_keyword, self.current_page)
             self.worker.result_signal.connect(self._on_search_result)
             self.worker.error_signal.connect(self._on_search_error)
             self.worker.finished.connect(self.worker.deleteLater)
-            # No need to add to workers dict because it's stored in self.worker
+            self.worker.finished.connect(lambda w=self.worker: self._cleanup_old_worker(w))
             self.worker.start()
+
+    def _cleanup_old_worker(self, w):
+        if w in self._old_workers:
+            self._old_workers.remove(w)
 
     def _on_search_result(self, keyword, results, total_pages, page):
         if keyword != self.current_keyword:

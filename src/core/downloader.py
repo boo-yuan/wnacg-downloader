@@ -58,7 +58,8 @@ class DownloaderWorker(QThread):
             if existing.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
                 return existing
             elif existing.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
-                self.resume_task(existing.id)
+                if cfg.auto_start_download and self._loop:
+                    self.resume_task(existing.id)
                 return existing
             elif existing.status == TaskStatus.COMPLETED:
                 existing.status = TaskStatus.PENDING if cfg.auto_start_download else TaskStatus.PAUSED
@@ -396,7 +397,8 @@ class DownloaderWorker(QThread):
                 db.update_task_status(task_id, TaskStatus.COMPLETED)
                 self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
             else:
-                raise Exception("Some images failed to download")
+                missing = task.total_images - task.downloaded_images
+                raise Exception(f"缺失 {missing} 张图片未能成功下载")
                 
         except Exception as e:
             if 'cancel_event' not in locals() or not cancel_event.is_set():
