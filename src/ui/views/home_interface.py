@@ -71,7 +71,7 @@ class HomeInterface(QWidget):
         self.scrollWidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scrollWidget.customContextMenuRequested.connect(self._show_context_menu)
         
-        self.flowLayout = FlowLayout(self.scrollWidget, needAni=True)
+        self.flowLayout = FlowLayout(self.scrollWidget, needAni=False)
         self.scrollArea.setWidget(self.scrollWidget)
         
         # Shortcut for Ctrl+A

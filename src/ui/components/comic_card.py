@@ -17,6 +17,7 @@ class ComicCard(ElevatedCardWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.vbox.setSpacing(6)
+        self.vbox.setContentsMargins(12, 12, 12, 12)
         
         self._is_selected = False
         
@@ -29,17 +30,21 @@ class ComicCard(ElevatedCardWidget):
         # 标题 (完整显示，自适应高度)
         self.titleLabel = QLabel(comic.title, self)
         self.titleLabel.setWordWrap(True)
-        # 强制设置最小高度，防止在布局自适应时与封面发生浮动重叠
+        self.titleLabel.setFixedWidth(196)
+        # 强制设置固定高度，防止在布局自适应时与封面发生浮动重叠
         font_metrics = self.titleLabel.fontMetrics()
         rect = font_metrics.boundingRect(0, 0, 196, 9999, Qt.TextFlag.TextWordWrap, comic.title)
-        self.titleLabel.setMinimumHeight(rect.height() + 5)
+        title_h = rect.height() + 5
+        self.titleLabel.setFixedHeight(title_h)
         
         # 信息行
         self.infoLayout = QHBoxLayout()
         self.infoLayout.setContentsMargins(0, 0, 0, 0)
         self.picCountLabel = CaptionLabel(comic.pic_count, self)
+        self.picCountLabel.setFixedHeight(20)
         self.picCountLabel.setTextColor(ThemeColor.PRIMARY.color())
         self.dateLabel = CaptionLabel(comic.date, self)
+        self.dateLabel.setFixedHeight(20)
         self.dateLabel.setTextColor(QColor('#888888'))
         self.infoLayout.addWidget(self.picCountLabel)
         self.infoLayout.addStretch(1)
@@ -48,9 +53,11 @@ class ComicCard(ElevatedCardWidget):
         # 一键下载按钮 / 打开文件夹按钮
         from qfluentwidgets import PushButton, FluentIcon as FIF
         self.downloadBtn = PrimaryPushButton("一键下载", self)
+        self.downloadBtn.setFixedHeight(32)
         self.downloadBtn.clicked.connect(self._on_download_clicked)
         
         self.openBtn = PushButton(FIF.FOLDER, "打开文件夹", self)
+        self.openBtn.setFixedHeight(32)
         self.openBtn.clicked.connect(self._on_open_clicked)
         self.openBtn.setVisible(False)
         
@@ -59,6 +66,9 @@ class ComicCard(ElevatedCardWidget):
         self.vbox.addLayout(self.infoLayout)
         self.vbox.addWidget(self.downloadBtn)
         self.vbox.addWidget(self.openBtn)
+        
+        total_h = 12 + 250 + 6 + title_h + 6 + 20 + 6 + 32 + 12
+        self.setFixedHeight(total_h)
         
         self.update_download_state()
         
