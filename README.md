@@ -44,23 +44,38 @@ WNACG Downloader 是一个为 WNACG 漫画爱好者量身定制的桌面端下�
 
 ## 📸 界面预览 (Screenshots)
 
-### 瀑布流画廊与搜索页
-![Home Interface](assets/001.png)
-
-### 高速下载队列与批量操作
-![Download Manager](assets/002.png)
-
-### 沉浸式高级设置面板
-![Settings Interface](assets/003.png)
-
-### 极简美学空状态
-![Empty State](assets/004.png)
-
-### 防误触退出确认与托盘提示
-![Prompt Dialog](assets/005.png)
-
-### 丰富的控制选项
-![More Features](assets/006.png)
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <b>瀑布流画廊与搜索页</b><br>
+      <img src="assets/001.png">
+    </td>
+    <td width="50%" align="center">
+      <b>高速下载队列与批量操作</b><br>
+      <img src="assets/002.png">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>沉浸式高级设置面板</b><br>
+      <img src="assets/003.png">
+    </td>
+    <td width="50%" align="center">
+      <b>极简美学空状态</b><br>
+      <img src="assets/004.png">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>防误触退出确认与托盘提示</b><br>
+      <img src="assets/005.png">
+    </td>
+    <td width="50%" align="center">
+      <b>丰富的控制选项</b><br>
+      <img src="assets/006.png">
+    </td>
+  </tr>
+</table>
 
 ---
 
