@@ -76,23 +76,31 @@ class DownloaderWorker(QThread):
             name = name.replace(c, '')
         return name.strip().rstrip('.')
 
+    def pause_tasks(self, task_ids: list[str]):
+        for task_id in task_ids:
+            if task_id in self._cancel_events:
+                self._cancel_events[task_id].set()
+            if task_id in self._active_tasks:
+                coro = self._active_tasks.pop(task_id)
+                coro.cancel()
+            db.update_task_status(task_id, TaskStatus.PAUSED)
+            self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
+        self._update_badge()
+        self._check_queue()
+
     def pause_task(self, task_id: str):
-        if task_id in self._cancel_events:
-            self._cancel_events[task_id].set()
-        if task_id in self._active_tasks:
-            coro = self._active_tasks.pop(task_id)
-            coro.cancel()
-        db.update_task_status(task_id, TaskStatus.PAUSED)
-        self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
+        self.pause_tasks([task_id])
+
+    def resume_tasks(self, task_ids: list[str]):
+        for task_id in task_ids:
+            if self._loop and task_id not in self._active_tasks:
+                db.update_task_status(task_id, TaskStatus.PENDING)
+                self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
         self._update_badge()
         self._check_queue()
 
     def resume_task(self, task_id: str):
-        if self._loop and task_id not in self._active_tasks:
-            db.update_task_status(task_id, TaskStatus.PENDING)
-            self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
-            self._update_badge()
-            self._check_queue()
+        self.resume_tasks([task_id])
 
     def _check_queue(self):
         if not self._loop: return
@@ -110,16 +118,20 @@ class DownloaderWorker(QThread):
             
         self._update_badge()
 
-    def cancel_task(self, task_id: str):
-        if task_id in self._cancel_events:
-            self._cancel_events[task_id].set()
-        if task_id in self._active_tasks:
-            coro = self._active_tasks.pop(task_id)
-            coro.cancel()
-        db.delete_task(task_id)
-        self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
+    def cancel_tasks(self, task_ids: list[str]):
+        for task_id in task_ids:
+            if task_id in self._cancel_events:
+                self._cancel_events[task_id].set()
+            if task_id in self._active_tasks:
+                coro = self._active_tasks.pop(task_id)
+                coro.cancel()
+            db.delete_task(task_id)
+            self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
         self._check_queue()
+
+    def cancel_task(self, task_id: str):
+        self.cancel_tasks([task_id])
 
     def _update_badge(self):
         tasks = db.get_all_tasks()
@@ -129,6 +141,8 @@ class DownloaderWorker(QThread):
     async def _process_task(self, task_id: str):
         task = db.get_task(task_id)
         if not task: return
+        
+        task_semaphore = asyncio.Semaphore(max(1, cfg.global_max_connections // max(1, cfg.max_concurrent_tasks)))
         
         cancel_event = asyncio.Event()
         self._cancel_events[task_id] = cancel_event
@@ -245,7 +259,7 @@ class DownloaderWorker(QThread):
                 
                 if cancel_event.is_set(): return False
                 
-                async with self._global_semaphore:
+                async with task_semaphore:
                     if cfg.download_delay > 0:
                         jitter = random.uniform(0.7, 1.3)
                         await asyncio.sleep(cfg.download_delay * jitter)
@@ -287,7 +301,7 @@ class DownloaderWorker(QThread):
                 # Download to temp file
                 temp_path = Path(task.save_path) / f"temp_{idx}_{uuid.uuid4().hex[:8]}.tmp"
                 
-                async with self._global_semaphore:
+                async with task_semaphore:
                     if cfg.download_delay > 0:
                         jitter = random.uniform(0.7, 1.3)
                         await asyncio.sleep(cfg.download_delay * jitter)
@@ -356,8 +370,6 @@ class DownloaderWorker(QThread):
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        
-        self._global_semaphore = asyncio.Semaphore(cfg.global_max_connections)
         
         # We don't automatically resume PENDING here. UI will trigger resume or we can auto resume.
         # But for robustness, let's auto resume PENDING

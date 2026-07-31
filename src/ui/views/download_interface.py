@@ -25,15 +25,18 @@ class DownloadItemCard(CardWidget):
         self.pauseBtn = PushButton(FIF.PAUSE, '暂停', self)
         self.resumeBtn = PrimaryPushButton(FIF.PLAY, '继续', self)
         self.cancelBtn = PushButton(FIF.DELETE, '取消', self)
+        self.openBtn = PushButton(FIF.FOLDER, '打开文件夹', self)
         
         self.pauseBtn.clicked.connect(self._on_pause)
         self.resumeBtn.clicked.connect(self._on_resume)
         self.cancelBtn.clicked.connect(self._on_cancel)
+        self.openBtn.clicked.connect(self._on_open)
         
         topLayout.addWidget(self.titleLabel, 1)
         topLayout.addWidget(self.pauseBtn, 0)
         topLayout.addWidget(self.resumeBtn, 0)
         topLayout.addWidget(self.cancelBtn, 0)
+        topLayout.addWidget(self.openBtn, 0)
         
         layout.addLayout(topLayout)
         
@@ -85,7 +88,8 @@ class DownloadItemCard(CardWidget):
     def _update_btns(self):
         self.pauseBtn.setVisible(self.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
         self.resumeBtn.setVisible(self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED))
-        self.cancelBtn.setVisible(self.task.status != TaskStatus.CANCELED)
+        self.cancelBtn.setVisible(self.task.status not in (TaskStatus.CANCELED, TaskStatus.COMPLETED))
+        self.openBtn.setVisible(self.task.status == TaskStatus.COMPLETED)
 
     def update_progress(self, downloaded: int, total: int):
         self.task.downloaded_images = downloaded
@@ -115,6 +119,21 @@ class DownloadItemCard(CardWidget):
     def _on_cancel(self):
         downloader_manager.cancel_task(self.task.id)
         self.deleteLater()
+
+    def _on_open(self):
+        import os, platform
+        path = self.task.save_path
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+            
+        if platform.system() == 'Windows':
+            os.startfile(path)
+        elif platform.system() == 'Darwin':
+            import subprocess
+            subprocess.run(['open', path])
+        else:
+            import subprocess
+            subprocess.run(['xdg-open', path])
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -149,12 +168,21 @@ class DownloadInterface(QWidget):
         hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量操作；双击卡片快速暂停/恢复", self)
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
         
+        self.startAllBtn = PushButton(FIF.PLAY, "开始全部", self)
+        self.startAllBtn.clicked.connect(self._start_all)
+        
+        self.pauseAllBtn = PushButton(FIF.PAUSE, "暂停全部", self)
+        self.pauseAllBtn.clicked.connect(self._pause_all)
+        
         self.clearCompletedBtn = PushButton(FIF.DELETE, "清空已完成", self)
         self.clearCompletedBtn.clicked.connect(self._clear_completed)
-        self.cancelAllBtn = PushButton(FIF.CANCEL, "取消全部任务", self)
+        
+        self.cancelAllBtn = PushButton(FIF.CANCEL, "取消全部", self)
         self.cancelAllBtn.clicked.connect(self._cancel_all)
         
         topBarLayout.addWidget(hintLabel, 1, Qt.AlignmentFlag.AlignLeft)
+        topBarLayout.addWidget(self.startAllBtn, 0, Qt.AlignmentFlag.AlignRight)
+        topBarLayout.addWidget(self.pauseAllBtn, 0, Qt.AlignmentFlag.AlignRight)
         topBarLayout.addWidget(self.clearCompletedBtn, 0, Qt.AlignmentFlag.AlignRight)
         topBarLayout.addWidget(self.cancelAllBtn, 0, Qt.AlignmentFlag.AlignRight)
         self.vbox.addLayout(topBarLayout)
@@ -254,37 +282,54 @@ class DownloadInterface(QWidget):
         menu.exec(global_pos)
         
     def _bulk_resume(self, items):
-        for item in items:
-            if hasattr(item, 'task') and item.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING):
-                downloader_manager.resume_task(item.task.id)
+        task_ids = [item.task.id for item in items if hasattr(item, 'task') and item.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)]
+        if task_ids:
+            downloader_manager.resume_tasks(task_ids)
         self.scrollWidget.clear_selection()
                 
     def _bulk_pause(self, items):
-        for item in items:
-            if hasattr(item, 'task') and item.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
-                downloader_manager.pause_task(item.task.id)
+        task_ids = [item.task.id for item in items if hasattr(item, 'task') and item.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)]
+        if task_ids:
+            downloader_manager.pause_tasks(task_ids)
         self.scrollWidget.clear_selection()
                 
     def _bulk_cancel(self, items):
+        task_ids = []
         for item in items:
             if hasattr(item, 'task') and item.task.status != TaskStatus.CANCELED:
-                downloader_manager.cancel_task(item.task.id)
+                task_ids.append(item.task.id)
                 item.deleteLater()
+        if task_ids:
+            downloader_manager.cancel_tasks(task_ids)
         self.scrollWidget.clear_selection()
+
+    def _start_all(self):
+        task_ids = [card.task.id for card in self.task_cards.values() if card.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)]
+        if task_ids:
+            downloader_manager.resume_tasks(task_ids)
+
+    def _pause_all(self):
+        task_ids = [card.task.id for card in self.task_cards.values() if card.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)]
+        if task_ids:
+            downloader_manager.pause_tasks(task_ids)
 
     def _clear_completed(self):
         to_remove = []
         for task_id, card in list(self.task_cards.items()):
             if card.task.status == TaskStatus.COMPLETED:
-                downloader_manager.cancel_task(task_id)
-                card.deleteLater()
                 to_remove.append(task_id)
+                card.deleteLater()
+        if to_remove:
+            downloader_manager.cancel_tasks(to_remove)
         for tid in to_remove:
             self.task_cards.pop(tid, None)
 
     def _cancel_all(self):
+        to_remove = []
         for task_id, card in list(self.task_cards.items()):
             if card.task.status != TaskStatus.CANCELED:
-                downloader_manager.cancel_task(task_id)
+                to_remove.append(task_id)
                 card.deleteLater()
+        if to_remove:
+            downloader_manager.cancel_tasks(to_remove)
         self.task_cards.clear()

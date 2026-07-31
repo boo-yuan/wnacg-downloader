@@ -20,6 +20,13 @@ class MainWindow(FluentWindow):
         
         self.initNavigation()
         
+    def changeEvent(self, event):
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            for card in self.homeInterface.card_map.values():
+                card.update_download_state()
+        super().changeEvent(event)
+        
     def initNavigation(self):
         self.addSubInterface(self.homeInterface, FIF.HOME, '漫画列表')
         self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, '任务列队')

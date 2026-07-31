@@ -45,15 +45,22 @@ class ComicCard(ElevatedCardWidget):
         self.infoLayout.addStretch(1)
         self.infoLayout.addWidget(self.dateLabel)
         
-        # 一键下载按钮
+        # 一键下载按钮 / 打开文件夹按钮
+        from qfluentwidgets import PushButton, FluentIcon as FIF
         self.downloadBtn = PrimaryPushButton("一键下载", self)
         self.downloadBtn.clicked.connect(self._on_download_clicked)
-        self.update_download_state()
+        
+        self.openBtn = PushButton(FIF.FOLDER, "打开文件夹", self)
+        self.openBtn.clicked.connect(self._on_open_clicked)
+        self.openBtn.setVisible(False)
         
         self.vbox.addWidget(self.coverLabel)
         self.vbox.addWidget(self.titleLabel)
         self.vbox.addLayout(self.infoLayout)
         self.vbox.addWidget(self.downloadBtn)
+        self.vbox.addWidget(self.openBtn)
+        
+        self.update_download_state()
         
         self.loader = None
         if self.comic.cover_url:
@@ -71,21 +78,72 @@ class ComicCard(ElevatedCardWidget):
         except RuntimeError:
             pass
 
+    def _get_save_path(self):
+        from core.config import cfg
+        from pathlib import Path
+        name = self.comic.title
+        invalid_chars = '<>:"/\\|?*'
+        for c in invalid_chars:
+            name = name.replace(c, '')
+        name = name.strip().rstrip('.')
+        return Path(cfg.download_dir) / name
+
     def update_download_state(self):
         task = db.get_task_by_aid(self.comic.aid)
+        save_path = self._get_save_path()
+        
+        is_downloaded_on_disk = False
+        if save_path.exists():
+            try:
+                is_downloaded_on_disk = any(save_path.iterdir())
+            except Exception:
+                pass
+        
+        state = "download"
         if task:
             if task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
-                self.downloadBtn.setText("已在队列")
-                self.downloadBtn.setEnabled(False)
+                state = "queued"
             elif task.status == TaskStatus.COMPLETED:
-                self.downloadBtn.setText("已下载")
-                self.downloadBtn.setEnabled(False)
-            else: # FAILED or CANCELED
-                self.downloadBtn.setText("重新下载")
-                self.downloadBtn.setEnabled(True)
+                state = "downloaded"
+            else:
+                if is_downloaded_on_disk:
+                    state = "downloaded"
+                else:
+                    state = "download"
         else:
-            self.downloadBtn.setText("一键下载")
+            if is_downloaded_on_disk:
+                state = "downloaded"
+            else:
+                state = "download"
+                
+        if state == "queued":
+            self.downloadBtn.setVisible(True)
+            self.openBtn.setVisible(False)
+            self.downloadBtn.setText("已在队列")
+            self.downloadBtn.setEnabled(False)
+        elif state == "downloaded":
+            self.downloadBtn.setVisible(False)
+            self.openBtn.setVisible(True)
+        else:
+            self.downloadBtn.setVisible(True)
+            self.openBtn.setVisible(False)
+            self.downloadBtn.setText("一键下载" if not task else "重新下载")
             self.downloadBtn.setEnabled(True)
+
+    def _on_open_clicked(self):
+        import os, platform
+        path = str(self._get_save_path())
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+            
+        if platform.system() == 'Windows':
+            os.startfile(path)
+        elif platform.system() == 'Darwin':
+            import subprocess
+            subprocess.run(['open', path])
+        else:
+            import subprocess
+            subprocess.run(['xdg-open', path])
 
     def setSelected(self, selected: bool):
         if self._is_selected == selected:
