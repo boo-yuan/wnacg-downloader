@@ -47,7 +47,8 @@ class DownloaderWorker(QThread):
         # Check for deleted folders for all tasks
         tasks = db.get_all_tasks()
         for task in tasks:
-            if not Path(task.save_path).exists():
+            save_path = Path(task.save_path)
+            if not save_path.exists() and not save_path.with_suffix('.zip').exists():
                 db.delete_task(task.id)
 
     def add_task(self, comic: Comic) -> DownloadTask:
@@ -348,6 +349,21 @@ class DownloaderWorker(QThread):
                 # Status already handled by pause_task or cancel_task
                 pass
             elif task.downloaded_images >= task.total_images:
+                if cfg.pack_to_zip:
+                    def create_zip(source_dir, delete_original):
+                        import zipfile, shutil
+                        if not source_dir.exists(): return
+                        zip_path = source_dir.with_suffix('.zip')
+                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            for root, dirs, files in os.walk(source_dir):
+                                for file in files:
+                                    file_path = Path(root) / file
+                                    zipf.write(file_path, file_path.relative_to(source_dir))
+                        if delete_original:
+                            shutil.rmtree(source_dir, ignore_errors=True)
+                            
+                    await asyncio.to_thread(create_zip, Path(task.save_path), cfg.delete_original_after_pack)
+                    
                 db.update_task_status(task_id, TaskStatus.COMPLETED)
                 self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
             else:

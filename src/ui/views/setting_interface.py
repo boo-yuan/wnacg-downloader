@@ -243,6 +243,27 @@ class SettingInterface(ScrollArea):
         self.sysGroup.addSettingCard(self.downloadNamingCard)
         self.sysGroup.addSettingCard(self.downloadFormatCard)
         
+        self.packZipCard = MySwitchSettingCard(
+            icon=FIF.ZIP_FOLDER,
+            title="自动打包为 ZIP",
+            content="下载完成后自动将图片打包为一个 ZIP 文件",
+            parent=self.sysGroup
+        )
+        self.packZipCard.setChecked(cfg.pack_to_zip)
+        self.packZipCard.checkedChanged.connect(self._on_pack_zip_changed)
+        
+        self.deleteOriginalCard = MySwitchSettingCard(
+            icon=FIF.DELETE,
+            title="打包后删除原文件",
+            content="打包 ZIP 完成后自动删除原始图片文件夹",
+            parent=self.sysGroup
+        )
+        self.deleteOriginalCard.setChecked(cfg.delete_original_after_pack)
+        self.deleteOriginalCard.checkedChanged.connect(self._on_delete_original_changed)
+
+        self.sysGroup.addSettingCard(self.packZipCard)
+        self.sysGroup.addSettingCard(self.deleteOriginalCard)
+        
         self.autoStartCard = MySwitchSettingCard(
             icon=FIF.PLAY,
             title="添加任务后立即下载",
@@ -355,6 +376,14 @@ class SettingInterface(ScrollArea):
         
     def _on_auto_start_changed(self, checked: bool):
         cfg.auto_start_download = checked
+        cfg.save()
+        
+    def _on_pack_zip_changed(self, checked: bool):
+        cfg.pack_to_zip = checked
+        cfg.save()
+        
+    def _on_delete_original_changed(self, checked: bool):
+        cfg.delete_original_after_pack = checked
         cfg.save()
         
     def _on_download_dir_clicked(self):
