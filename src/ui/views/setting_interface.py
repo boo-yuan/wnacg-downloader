@@ -101,9 +101,20 @@ class DomainFetchWorker(QThread):
                 r = s.get("https://wnacg01.link/")
                 if r.status_code == 200:
                     soup = BeautifulSoup(r.text, 'html.parser')
-                    for a in soup.find_all('a'):
-                        text = a.text.replace('\xa0', ' ').strip()
-                        if text.startswith("www.") and text not in domains and "google" not in text:
+                    lis = soup.select('.content-top ul li')
+                    # Ignore first 2 and last 1 li elements as per user instruction
+                    if len(lis) > 3:
+                        lis = lis[2:-1]
+                        
+                    for li in lis:
+                        a = li.find('a')
+                        if a:
+                            text = a.text.replace('\xa0', ' ').strip()
+                        else:
+                            text = li.text.replace('\xa0', ' ').strip()
+                            
+                        text = text.replace("https://", "").replace("http://", "").replace("/", "").strip()
+                        if text and text not in domains:
                             domains.append(text)
         except Exception:
             pass
@@ -286,23 +297,27 @@ class SettingInterface(ScrollArea):
         
         self.domainCard = EditableComboBoxSettingCard(
             icon=FIF.GLOBE,
-            title="站点域名",
-            content="常被墙可随时更换 (正在从发布页获取最新域名...)",
-            texts=["www.wnacg.ru", "www.wnacg.com"],
+            title="站点主域名",
+            content="常被墙可随时更换，默认支持 www.wnacg.com 和 www.wnacg.ru",
+            texts=["www.wnacg.com", "www.wnacg.ru"],
             parent=self.sysGroup
         )
         self.domainCard.comboBox.setText(cfg.domain)
         self.domainCard.comboBox.textChanged.connect(self._on_domain_changed)
         
+        self.fetchDomainCard = PushSettingCard(
+            text="获取",
+            icon=FIF.SYNC,
+            title="获取最新备用域名",
+            content="从发布页 (wnacg01.link) 获取最新防屏蔽域名并添加到下拉列表中",
+            parent=self.sysGroup
+        )
+        self.fetchDomainCard.clicked.connect(self._fetch_latest_domains)
+        
         self.sysGroup.addSettingCard(self.domainCard)
+        self.sysGroup.addSettingCard(self.fetchDomainCard)
         self.sysGroup.addSettingCard(self.logCard)
         self.expandLayout.addWidget(self.sysGroup)
-        
-        # 启动后台域名抓取
-        self.fetch_worker = DomainFetchWorker(self)
-        self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
-        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
-        self.fetch_worker.start()
         
     def _init_about_settings(self):
         self.aboutGroup = SettingCardGroup("关于", self.scrollWidget)
@@ -337,12 +352,36 @@ class SettingInterface(ScrollArea):
         self.aboutGroup.addSettingCard(self.aboutCard)
         self.expandLayout.addWidget(self.aboutGroup)
         
+    def _fetch_latest_domains(self):
+        self.fetchDomainCard.button.setText("获取中...")
+        self.fetchDomainCard.button.setEnabled(False)
+        self.fetch_worker = DomainFetchWorker(self)
+        self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
+        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
+        self.fetch_worker.start()
+        
     def _on_domains_fetched(self, domains):
-        self.domainCard.setContent("常被墙可随时更换 (获取最新域名请访问发布页 https://wnacg01.link/)")
+        self.fetchDomainCard.button.setText("获取")
+        self.fetchDomainCard.button.setEnabled(True)
+        
+        if not domains:
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            InfoBar.error("获取失败", "无法从发布页解析到最新域名，请检查网络", parent=self.window(), position=InfoBarPosition.TOP)
+            return
+            
         existing = [self.domainCard.comboBox.itemText(i) for i in range(self.domainCard.comboBox.count())]
+        added = 0
         for d in domains:
             if d not in existing:
                 self.domainCard.comboBox.addItem(d)
+                added += 1
+                
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        if added > 0:
+            InfoBar.success("获取成功", f"已成功添加 {added} 个最新域名到下拉列表中", parent=self.window(), position=InfoBarPosition.TOP)
+            self.domainCard.comboBox.setCurrentIndex(self.domainCard.comboBox.count() - 1)
+        else:
+            InfoBar.warning("已是最新", "发布页中的最新域名已全部存在于列表中", parent=self.window(), position=InfoBarPosition.TOP)
         
     def _open_log_file(self):
         log_path = Path("app.log").absolute()

@@ -46,7 +46,7 @@ class WnacgCrawler:
         return AsyncSession(**kwargs)
         
     _active_domain = None
-    _mirrors = ["www.wnacg.ru", "www.wnacg.org", "www.wnacg.net", "www.wnacg.com"]
+    _mirrors = ["www.wnacg.com", "www.wnacg.ru"]
 
     @classmethod
     def get_base_url(cls) -> str:
