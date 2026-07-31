@@ -5,8 +5,12 @@ from core.config import cfg
 from core.logger import logger
 import urllib.parse
 import re
+import threading
+import asyncio
 
 class WnacgCrawler:
+    
+    _domain_lock = threading.Lock()
     
     @staticmethod
     def get_sync_client() -> Session:
@@ -52,14 +56,15 @@ class WnacgCrawler:
         
     @classmethod
     def switch_domain(cls):
-        if not cls._active_domain:
-            cls._active_domain = cfg.domain
-        if cls._active_domain in cls._mirrors:
-            idx = cls._mirrors.index(cls._active_domain)
-            cls._active_domain = cls._mirrors[(idx + 1) % len(cls._mirrors)]
-        else:
-            cls._active_domain = cls._mirrors[0]
-        logger.warning(f"Switched active domain to {cls._active_domain}")
+        with cls._domain_lock:
+            if not cls._active_domain:
+                cls._active_domain = cfg.domain
+            if cls._active_domain in cls._mirrors:
+                idx = cls._mirrors.index(cls._active_domain)
+                cls._active_domain = cls._mirrors[(idx + 1) % len(cls._mirrors)]
+            else:
+                cls._active_domain = cls._mirrors[0]
+            logger.warning(f"Switched active domain to {cls._active_domain}")
 
     @classmethod
     def fetch_sync(cls, client, path: str, **kwargs):
@@ -158,53 +163,58 @@ class WnacgCrawler:
         results = []
         async with cls.get_client() as client:
             resp, base_url = await cls.fetch(client, f"/search/index.php?q={encoded_kw}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}")
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            items = soup.select('.gallary_item')
-            for item in items:
-                title_elem = item.select_one('.title a')
-                if not title_elem:
-                    continue
-                title = title_elem.text.strip()
-                link = title_elem.get('href', '')
-                
-                img_elem = item.select_one('img')
-                cover_url = img_elem.get('src', '') if img_elem else ''
-                if cover_url.startswith('//'):
-                    cover_url = 'https:' + cover_url
+            
+            def parse_html(html):
+                soup = BeautifulSoup(html, 'html.parser')
+                res = []
+                items = soup.select('.gallary_item')
+                for item in items:
+                    title_elem = item.select_one('.title a')
+                    if not title_elem:
+                        continue
+                    title = title_elem.text.strip()
+                    link = title_elem.get('href', '')
                     
-                aid = ""
-                if "aid-" in link:
-                    aid = link.split("aid-")[1].split(".html")[0]
-                    
-                pic_count = ""
-                date = ""
-                info_col = item.select_one('.info_col')
-                if info_col:
-                    text = info_col.text.strip()
-                    m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
-                    if m_pic:
-                        pic_count = f"{m_pic.group(1)}图"
-                    m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
-                    if m_date:
-                        date = m_date.group(1)
-                    
-                results.append(Comic(
-                    aid=aid,
-                    title=title,
-                    cover_url=cover_url,
-                    url=link,
-                    pic_count=pic_count,
-                    date=date
-                ))
-                
-            max_page = 1
-            paginator = soup.select_one('.f_left.paginator')
-            if paginator:
-                for el in paginator.find_all(['a', 'span']):
-                    text = el.text.strip()
-                    if text.isdigit():
-                        max_page = max(max_page, int(text))
+                    img_elem = item.select_one('img')
+                    cover_url = img_elem.get('src', '') if img_elem else ''
+                    if cover_url.startswith('//'):
+                        cover_url = 'https:' + cover_url
                         
+                    aid = ""
+                    if "aid-" in link:
+                        aid = link.split("aid-")[1].split(".html")[0]
+                        
+                    pic_count = ""
+                    date = ""
+                    info_col = item.select_one('.info_col')
+                    if info_col:
+                        text = info_col.text.strip()
+                        m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
+                        if m_pic:
+                            pic_count = f"{m_pic.group(1)}图"
+                        m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+                        if m_date:
+                            date = m_date.group(1)
+                        
+                    res.append(Comic(
+                        aid=aid,
+                        title=title,
+                        cover_url=cover_url,
+                        url=link,
+                        pic_count=pic_count,
+                        date=date
+                    ))
+                    
+                m_page = 1
+                paginator = soup.select_one('.f_left.paginator')
+                if paginator:
+                    for el in paginator.find_all(['a', 'span']):
+                        text = el.text.strip()
+                        if text.isdigit():
+                            m_page = max(m_page, int(text))
+                return res, m_page
+                
+            results, max_page = await asyncio.to_thread(parse_html, resp.text)
             return results, max_page
 
     @classmethod
@@ -218,26 +228,28 @@ class WnacgCrawler:
         async with cls.get_client() as client:
             try:
                 resp, base_url = await cls.fetch(client, f"/photos-index-page-1-aid-{aid}.html")
-                soup = BeautifulSoup(resp.text, 'html.parser')
                 
-                # 解析第一页
-                pics = soup.select('.pic_box a')
-                for pic in pics:
-                    href = pic.get('href')
-                    if href:
-                        if href.startswith('/'):
-                            view_links.append(f"{base_url}{href}")
-                        else:
-                            view_links.append(href)
-                            
-                # 寻找最大页码
-                max_page = 1
-                paginator = soup.select_one('.f_left.paginator')
-                if paginator:
-                    for el in paginator.find_all(['a', 'span']):
-                        text = el.text.strip()
-                        if text.isdigit():
-                            max_page = max(max_page, int(text))
+                def parse_page_1(html):
+                    soup = BeautifulSoup(html, 'html.parser')
+                    links = []
+                    pics = soup.select('.pic_box a')
+                    for pic in pics:
+                        href = pic.get('href')
+                        if href:
+                            if href.startswith('/'):
+                                links.append(f"{base_url}{href}")
+                            else:
+                                links.append(href)
+                    m_page = 1
+                    paginator = soup.select_one('.f_left.paginator')
+                    if paginator:
+                        for el in paginator.find_all(['a', 'span']):
+                            text = el.text.strip()
+                            if text.isdigit():
+                                m_page = max(m_page, int(text))
+                    return links, m_page
+                    
+                view_links, max_page = await asyncio.to_thread(parse_page_1, resp.text)
                             
                 if max_page > 1:
                     sem = asyncio.Semaphore(3) # 限制并发并发抓取页码的连接数
@@ -245,16 +257,19 @@ class WnacgCrawler:
                         async with sem:
                             try:
                                 r, _ = await cls.fetch(client, f"/photos-index-page-{page_num}-aid-{aid}.html", timeout=15.0)
-                                p_soup = BeautifulSoup(r.text, 'html.parser')
-                                p_pics = p_soup.select('.pic_box a')
-                                links = []
-                                for pic in p_pics:
-                                    href = pic.get('href')
-                                    if href:
-                                        if href.startswith('/'):
-                                            links.append(f"{base_url}{href}")
-                                        else:
-                                            links.append(href)
+                                def parse_other_page(html):
+                                    p_soup = BeautifulSoup(html, 'html.parser')
+                                    p_pics = p_soup.select('.pic_box a')
+                                    links = []
+                                    for pic in p_pics:
+                                        href = pic.get('href')
+                                        if href:
+                                            if href.startswith('/'):
+                                                links.append(f"{base_url}{href}")
+                                            else:
+                                                links.append(href)
+                                    return links
+                                links = await asyncio.to_thread(parse_other_page, r.text)
                                 return page_num, links
                             except Exception as e:
                                 logger.error(f"Failed to fetch page {page_num} of {aid}: {e}")
@@ -284,12 +299,19 @@ class WnacgCrawler:
                 from urllib.parse import urlparse
                 path = urlparse(view_url).path
                 resp, _ = await cls.fetch(c, path, allow_redirects=True, timeout=15.0)
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                img_elem = soup.select_one('#picarea')
-                if img_elem:
-                    src = img_elem.get('src', '')
-                    if src.startswith('//'):
-                        src = 'https:' + src
+                
+                def parse_raw(html):
+                    soup = BeautifulSoup(html, 'html.parser')
+                    img_elem = soup.select_one('#picarea')
+                    if img_elem:
+                        src = img_elem.get('src', '')
+                        if src.startswith('//'):
+                            src = 'https:' + src
+                        return src
+                    return ""
+                    
+                src = await asyncio.to_thread(parse_raw, resp.text)
+                if src:
                     return src
             except Exception as e:
                 logger.error(f"Failed to get raw image url from {view_url}: {e}")

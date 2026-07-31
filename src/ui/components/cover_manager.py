@@ -49,7 +49,7 @@ class CoverFetchTask(QRunnable):
         kwargs = {
             "impersonate": "chrome",
             "verify": False,
-            "timeout": 15.0
+            "timeout": 5.0
         }
         if cfg.proxy_mode == "custom":
             kwargs["proxies"] = cfg.curl_cffi_proxies
@@ -94,7 +94,7 @@ class CoverManagerClass(QObject):
         # But wait, QThreadPool usually has lots of threads (e.g. 8-16 depending on CPU)
         # To limit only covers to 5, we should probably just use our own thread pool!
         self.cover_pool = QThreadPool()
-        self.cover_pool.setMaxThreadCount(5)
+        self.cover_pool.setMaxThreadCount(15)
         self.signals = CoverManagerSignals()
         self.signals.finished.connect(self._on_task_finished)
         

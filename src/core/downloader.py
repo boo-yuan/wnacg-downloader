@@ -166,7 +166,7 @@ class DownloaderWorker(QThread):
                     valid_found = False
                     for ef in expected_files:
                         fp = Path(task.save_path) / ef
-                        if is_valid_image(fp):
+                        if await asyncio.to_thread(is_valid_image, fp):
                             valid_found = True
                             break
                             
@@ -275,7 +275,7 @@ class DownloaderWorker(QThread):
                     
                 for ef in expected_files:
                     fp = Path(task.save_path) / ef
-                    if status == 'downloaded' and is_valid_image(fp):
+                    if status == 'downloaded' and await asyncio.to_thread(is_valid_image, fp):
                         return True
                 
                 if cancel_event.is_set(): return False
@@ -296,7 +296,10 @@ class DownloaderWorker(QThread):
                                 with open(temp_path, "wb") as f:
                                     f.write(resp.content)
                                     
-                                if process_and_save_image(temp_path, Path(task.save_path), idx, raw_url):
+                                success = await asyncio.to_thread(
+                                    process_and_save_image, temp_path, Path(task.save_path), idx, raw_url
+                                )
+                                if success:
                                     db.update_image_status(task_id, idx, 'downloaded')
                                     task.downloaded_images += 1
                                     db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)

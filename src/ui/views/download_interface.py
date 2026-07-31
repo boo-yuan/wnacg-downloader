@@ -211,8 +211,17 @@ class DownloadInterface(QWidget):
 
     def _show_context_menu(self, pos):
         selected_items = self.scrollWidget.get_selected_items()
+        target_card = self.scrollWidget._get_item_at(pos)
+        
         if not selected_items:
-            return
+            if target_card:
+                selected_items = [target_card]
+            else:
+                return
+        elif target_card and target_card not in selected_items:
+            self.scrollWidget.clear_selection()
+            target_card.setSelected(True)
+            selected_items = [target_card]
             
         menu = QMenu(self)
         

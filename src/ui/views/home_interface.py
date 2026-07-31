@@ -41,6 +41,7 @@ class HomeInterface(QWidget):
         self._search_cache = {}
         self._preloading_pages = set()
         self.workers = {}
+        self.card_map = {}
         
         # 顶部搜索栏
         self.searchBar = SearchLineEdit(self)
@@ -103,11 +104,22 @@ class HomeInterface(QWidget):
         self.backToTopBtn.move(self.width() - 80, self.height() - 100)
         
     def _on_task_state_changed(self, *args):
-        for i in range(self.flowLayout.count()):
-            item = self.flowLayout.itemAt(i)
-            widget = item.widget() if hasattr(item, 'widget') else item
-            if widget and hasattr(widget, 'update_download_state'):
-                widget.update_download_state()
+        aid_to_update = None
+        if len(args) == 1 and hasattr(args[0], 'comic'):
+            aid_to_update = args[0].comic.aid
+        elif len(args) >= 1 and isinstance(args[0], str):
+            task_id = args[0]
+            import core.db as db
+            task = db.get_task(task_id)
+            if task and task.comic:
+                aid_to_update = task.comic.aid
+                
+        if aid_to_update and aid_to_update in self.card_map:
+            self.card_map[aid_to_update].update_download_state()
+        elif not aid_to_update:
+            for card in self.card_map.values():
+                if hasattr(card, 'update_download_state'):
+                    card.update_download_state()
         
     def _init_bottom_layout(self):
         self.bottomWidget = QWidget(self)
@@ -247,6 +259,7 @@ class HomeInterface(QWidget):
             widget = item.widget() if hasattr(item, 'widget') else item
             if widget:
                 widget.deleteLater()
+        self.card_map.clear()
                 
         cache_key = (self.current_keyword, self.current_page)
         if cache_key in self._search_cache:
@@ -299,6 +312,7 @@ class HomeInterface(QWidget):
             card = ComicCard(comic, self.scrollWidget)
             card.downloadClicked.connect(self._on_download_clicked)
             self.flowLayout.addWidget(card)
+            self.card_map[comic.aid] = card
             
     def _on_search_error(self, keyword, err_msg, page):
         if keyword != self.current_keyword:
@@ -316,8 +330,17 @@ class HomeInterface(QWidget):
 
     def _show_context_menu(self, pos):
         selected_items = self.scrollWidget.get_selected_items()
+        target_card = self.scrollWidget._get_item_at(pos)
+        
         if not selected_items:
-            return
+            if target_card:
+                selected_items = [target_card]
+            else:
+                return
+        elif target_card and target_card not in selected_items:
+            self.scrollWidget.clear_selection()
+            target_card.setSelected(True)
+            selected_items = [target_card]
             
         menu = QMenu(self)
         
