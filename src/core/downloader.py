@@ -1,16 +1,19 @@
 import asyncio
 import os
-import time
-from pathlib import Path
-from PySide6.QtCore import QThread, Signal, QObject
-from core.models import DownloadTask, Comic, TaskStatus
-from core.crawler import WnacgCrawler
-from core.config import cfg
-from core.logger import logger
-import core.db as db
-import uuid
-import PIL.Image
 import random
+import time
+import uuid
+from pathlib import Path
+
+import PIL.Image
+from PySide6.QtCore import QObject, QThread, Signal
+
+import core.db as db
+from core.config import cfg
+from core.crawler import WnacgCrawler
+from core.logger import logger
+from core.models import Comic, DownloadTask, TaskStatus
+
 
 class SpeedMonitor:
     def __init__(self):
@@ -450,7 +453,8 @@ class DownloaderWorker(QThread):
             elif task.downloaded_images >= task.total_images:
                 if cfg.pack_to_zip:
                     def create_zip(source_dir, delete_original):
-                        import zipfile, shutil
+                        import shutil
+                        import zipfile
                         if not source_dir.exists(): return
                         zip_path = source_dir.with_suffix('.zip')
                         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:

@@ -1,6 +1,7 @@
-import asyncio
 from curl_cffi.requests import AsyncSession
+
 from core.logger import logger
+
 
 class Updater:
     REPO = "boo-yuan/wnacg-downloader"

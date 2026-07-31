@@ -1,6 +1,7 @@
 import json
 from enum import Enum
 from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -46,7 +47,7 @@ def load_config() -> AppConfig:
     data = {}
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             pass

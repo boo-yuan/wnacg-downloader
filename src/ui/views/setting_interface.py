@@ -1,16 +1,32 @@
-from PySide6.QtCore import Qt, QThread, Signal, QUrl
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QFileDialog
-from PySide6.QtGui import QDesktopServices
-from qfluentwidgets import (SettingCardGroup, SettingCard, LineEdit, ComboBox, PushSettingCard, PrimaryPushSettingCard,
-                            EditableComboBox, FluentIcon as FIF, ScrollArea, ExpandLayout,
-                            SwitchButton, SpinBox, DoubleSpinBox, setFont)
-import os
 import asyncio
+import os
 from pathlib import Path
+
 from bs4 import BeautifulSoup
 from curl_cffi.requests import Session
-from core.config import cfg, ProxyMode
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QFileDialog, QWidget
+from qfluentwidgets import (
+    ComboBox,
+    DoubleSpinBox,
+    EditableComboBox,
+    ExpandLayout,
+    LineEdit,
+    PrimaryPushSettingCard,
+    PushSettingCard,
+    ScrollArea,
+    SettingCard,
+    SettingCardGroup,
+    SpinBox,
+    SwitchButton,
+    setFont,
+)
+from qfluentwidgets import FluentIcon as FIF
+
+from core.config import ProxyMode, cfg
 from core.updater import Updater
+
 
 class LineEditSettingCard(SettingCard):
     """ Custom setting card for line edit input """
@@ -440,6 +456,7 @@ class AboutSettingInterface(BaseSettingInterface):
         self.logCard.clicked.connect(self._open_log_file)
         
         import os
+
         from PySide6.QtGui import QIcon
         icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
         
@@ -519,8 +536,8 @@ class AboutSettingInterface(BaseSettingInterface):
             if w.exec():
                 url = result.get('download_url')
                 if url:
-                    from PySide6.QtGui import QDesktopServices
                     from PySide6.QtCore import QUrl
+                    from PySide6.QtGui import QDesktopServices
                     QDesktopServices.openUrl(QUrl(url))
         else:
             w = MessageBox("已是最新版本", f"当前版本 {Updater.CURRENT_VERSION} 已是最新，无需更新。", self.window())

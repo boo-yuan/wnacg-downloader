@@ -1,15 +1,25 @@
-import asyncio
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel
-from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, PrimaryPushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont, ThemeColor
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
+from qfluentwidgets import (
+    FlowLayout,
+    InfoBar,
+    InfoBarPosition,
+    PrimaryPushButton,
+    PrimaryToolButton,
+    PushButton,
+    SearchLineEdit,
+    ThemeColor,
+    setFont,
+)
+from qfluentwidgets import FluentIcon as FIF
+
 from core.crawler import WnacgCrawler
 from core.downloader import downloader_manager
 from core.models import Comic
 from ui.components.comic_card import ComicCard
-from ui.components.cover_manager import cover_manager
 from ui.components.selectable_container import SelectableContainer
-from PySide6.QtGui import QAction, QShortcut, QKeySequence
-from PySide6.QtWidgets import QMenu
+
 
 class SearchWorker(QThread):
     result_signal = Signal(str, list, int, int) # keyword, results, total_pages, page
@@ -44,7 +54,6 @@ class HomeInterface(QWidget):
         self.card_map = {}
         self._old_workers = []
         
-        from PySide6.QtWidgets import QSpacerItem, QSizePolicy
         
         # Spacer for vertical centering (top)
         self.topSpacerWidget = QWidget()
@@ -56,9 +65,10 @@ class HomeInterface(QWidget):
         heroLayout.setContentsMargins(0, 0, 0, 0)
         heroLayout.setSpacing(12)
         
-        from qfluentwidgets import TitleLabel, SubtitleLabel, ThemeColor
-        from PySide6.QtGui import QPixmap
         import os
+
+        from PySide6.QtGui import QPixmap
+        from qfluentwidgets import SubtitleLabel, ThemeColor, TitleLabel
         
         self.logoImage = QLabel(self)
         icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
@@ -113,10 +123,10 @@ class HomeInterface(QWidget):
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
         
         self.selectAllBtn = PushButton(FIF.CHECKBOX, "全选", self)
-        self.selectAllBtn.clicked.connect(self.scrollWidget.select_all)
+        self.selectAllBtn.clicked.connect(lambda: self.scrollWidget.select_all())
         
         self.deselectAllBtn = PushButton(FIF.CANCEL, "取消全选", self)
-        self.deselectAllBtn.clicked.connect(self.scrollWidget.clear_selection)
+        self.deselectAllBtn.clicked.connect(lambda: self.scrollWidget.clear_selection())
         
         self.addToQueueBtn = PrimaryPushButton(FIF.DOWNLOAD, "加入队列", self)
         self.addToQueueBtn.clicked.connect(self._on_topbar_add_to_queue)

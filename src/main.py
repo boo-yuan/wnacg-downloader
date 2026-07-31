@@ -1,10 +1,12 @@
 import sys
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
-from qfluentwidgets import setTheme, Theme
+from qfluentwidgets import Theme, setTheme
 
 # 确保在导入模块之前将 src 加入 sys.path（或者在 run.bat 中设置了 PYTHONPATH）
 from ui.main_window import MainWindow
+
 
 def main():
     # 启用高 DPI 缩放支持

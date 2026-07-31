@@ -1,14 +1,26 @@
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QMenu
-from PySide6.QtGui import QContextMenuEvent, QAction
-from qfluentwidgets import ProgressBar, TitleLabel, CardWidget, SubtitleLabel, StrongBodyLabel, PushButton, PrimaryPushButton, FluentIcon as FIF, InfoBar, InfoBarPosition
+from PySide6.QtGui import QAction, QContextMenuEvent, QKeySequence, QShortcut
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
+from qfluentwidgets import (
+    BodyLabel,
+    CardWidget,
+    CheckBox,
+    MessageBoxBase,
+    PrimaryPushButton,
+    ProgressBar,
+    PushButton,
+    StrongBodyLabel,
+    SubtitleLabel,
+    TitleLabel,
+)
+from qfluentwidgets import FluentIcon as FIF
+
+import core.db as db
+from core.config import cfg
 from core.downloader import downloader_manager
 from core.models import DownloadTask, TaskStatus
-import core.db as db
 from ui.components.selectable_container import SelectableContainer
-from PySide6.QtGui import QAction, QShortcut, QKeySequence
-from qfluentwidgets import MessageBoxBase, SubtitleLabel, CheckBox, BodyLabel
-from core.config import cfg
+
 
 class CancelPromptDialog(MessageBoxBase):
     def __init__(self, count=1, parent=None):
@@ -150,7 +162,8 @@ class DownloadItemCard(CardWidget):
         self.deleteLater()
 
     def _on_open(self):
-        import os, platform
+        import os
+        import platform
         from pathlib import Path
         path = Path(self.task.save_path)
         
@@ -265,9 +278,10 @@ class DownloadInterface(QWidget):
         emptyLayout = QVBoxLayout(self.emptyWidget)
         emptyLayout.setSpacing(12)
         
-        from qfluentwidgets import TitleLabel, SubtitleLabel
-        from PySide6.QtGui import QPixmap
         import os
+
+        from PySide6.QtGui import QPixmap
+        from qfluentwidgets import SubtitleLabel
         
         self.emptyImage = QLabel(self)
         icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
@@ -351,11 +365,11 @@ class DownloadInterface(QWidget):
         action_resume.triggered.connect(lambda: self._bulk_resume(selected_items))
         menu.addAction(action_resume)
         
-        action_pause = QAction(f"暂停下载", self)
+        action_pause = QAction("暂停下载", self)
         action_pause.triggered.connect(lambda: self._bulk_pause(selected_items))
         menu.addAction(action_pause)
         
-        action_cancel = QAction(f"取消任务", self)
+        action_cancel = QAction("取消任务", self)
         action_cancel.triggered.connect(lambda: self._bulk_cancel(selected_items))
         menu.addAction(action_cancel)
         

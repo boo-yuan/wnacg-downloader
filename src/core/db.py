@@ -1,9 +1,8 @@
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-import json
-from typing import List, Optional
-from core.models import DownloadTask, Comic, TaskStatus
+
+from core.models import Comic, DownloadTask, TaskStatus
 
 DB_PATH = Path("data/tasks.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +67,7 @@ def save_task(task: DownloadTask):
         ))
         conn.commit()
 
-def get_all_tasks() -> List[DownloadTask]:
+def get_all_tasks() -> list[DownloadTask]:
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks ORDER BY created_at DESC")
@@ -95,7 +94,7 @@ def get_all_tasks() -> List[DownloadTask]:
             tasks.append(task)
         return tasks
 
-def get_task(task_id: str) -> Optional[DownloadTask]:
+def get_task(task_id: str) -> DownloadTask | None:
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -120,7 +119,7 @@ def get_task(task_id: str) -> Optional[DownloadTask]:
             error_message=row["error_message"]
         )
 
-def get_task_by_aid(aid: str) -> Optional[DownloadTask]:
+def get_task_by_aid(aid: str) -> DownloadTask | None:
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tasks WHERE aid = ?", (aid,))
@@ -171,7 +170,7 @@ def reset_downloading_tasks():
         cursor.execute("UPDATE tasks SET status = ? WHERE status = ?", (TaskStatus.PAUSED.value, TaskStatus.DOWNLOADING.value))
         conn.commit()
 
-def save_view_links(task_id: str, view_links: List[str]):
+def save_view_links(task_id: str, view_links: list[str]):
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()
         for i, link in enumerate(view_links):

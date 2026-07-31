@@ -1,10 +1,12 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QImage, QAction, QContextMenuEvent, QColor
-from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QMenu
-from qfluentwidgets import PrimaryPushButton, ElevatedCardWidget, CaptionLabel, ThemeColor
-from core.models import Comic, TaskStatus
+from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
+from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, ThemeColor
+
 import core.db as db
+from core.models import Comic, TaskStatus
 from ui.components.cover_manager import cover_manager
+
 
 class ComicCard(ElevatedCardWidget):
     downloadClicked = Signal(Comic)
@@ -51,7 +53,8 @@ class ComicCard(ElevatedCardWidget):
         self.infoLayout.addWidget(self.dateLabel)
         
         # 一键下载按钮 / 打开文件夹按钮
-        from qfluentwidgets import PushButton, FluentIcon as FIF
+        from qfluentwidgets import FluentIcon as FIF
+        from qfluentwidgets import PushButton
         self.downloadBtn = PrimaryPushButton("一键下载", self)
         self.downloadBtn.setFixedHeight(32)
         self.downloadBtn.clicked.connect(self._on_download_clicked)
@@ -89,8 +92,9 @@ class ComicCard(ElevatedCardWidget):
             pass
 
     def _get_save_path(self):
-        from core.config import cfg
         from pathlib import Path
+
+        from core.config import cfg
         name = self.comic.title
         invalid_chars = '<>:"/\\|?*'
         for c in invalid_chars:
@@ -152,8 +156,8 @@ class ComicCard(ElevatedCardWidget):
             self.downloadBtn.setEnabled(True)
 
     def _on_open_clicked(self):
-        import os, platform
-        from pathlib import Path
+        import os
+        import platform
         path = self._get_save_path()
         
         target_path = path

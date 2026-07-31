@@ -1,10 +1,12 @@
+import atexit
+import hashlib
 import os
 import shutil
-import hashlib
-import atexit
-from PySide6.QtCore import QObject, Signal, QRunnable, QThreadPool
-from PySide6.QtGui import QImage
+
 from curl_cffi import requests
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtGui import QImage
+
 from core.config import cfg
 from core.logger import logger
 

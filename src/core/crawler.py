@@ -1,12 +1,15 @@
-from curl_cffi.requests import AsyncSession, Session
-from bs4 import BeautifulSoup
-from core.models import Comic
-from core.config import cfg
-from core.logger import logger
-import urllib.parse
+import asyncio
 import re
 import threading
-import asyncio
+import urllib.parse
+
+from bs4 import BeautifulSoup
+from curl_cffi.requests import AsyncSession, Session
+
+from core.config import cfg
+from core.logger import logger
+from core.models import Comic
+
 
 class WnacgCrawler:
     

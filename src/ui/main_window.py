@@ -1,11 +1,21 @@
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QCloseEvent, QAction
-from PySide6.QtWidgets import QSystemTrayIcon, QMenu
-from qfluentwidgets import FluentWindow, NavigationItemPosition, FluentIcon as FIF, InfoBadge, InfoBadgePosition
-from qfluentwidgets import MessageBoxBase, SubtitleLabel, CheckBox, BodyLabel
 import os
-from core.downloader import downloader_manager
+
+from PySide6.QtGui import QAction, QCloseEvent, QIcon
+from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from qfluentwidgets import (
+    BodyLabel,
+    CheckBox,
+    FluentWindow,
+    InfoBadge,
+    InfoBadgePosition,
+    MessageBoxBase,
+    SubtitleLabel,
+)
+from qfluentwidgets import FluentIcon as FIF
+
 from core.config import cfg
+from core.downloader import downloader_manager
+
 
 class ClosePromptDialog(MessageBoxBase):
     def __init__(self, parent=None):
@@ -24,9 +34,10 @@ class ClosePromptDialog(MessageBoxBase):
         self.yesButton.setText("最小化到托盘")
         self.cancelButton.setText("彻底退出")
 
-from ui.views.home_interface import HomeInterface
 from ui.views.download_interface import DownloadInterface
-from ui.views.setting_interface import NetworkSettingInterface, DownloadSettingInterface, AboutSettingInterface
+from ui.views.home_interface import HomeInterface
+from ui.views.setting_interface import AboutSettingInterface, DownloadSettingInterface, NetworkSettingInterface
+
 
 class MainWindow(FluentWindow):
     def __init__(self):
@@ -132,7 +143,6 @@ class MainWindow(FluentWindow):
         self.trayIcon.activated.connect(self._on_tray_activated)
         self.trayIcon.show()
 
-        from core.models import TaskStatus
         downloader_manager.signals.task_status_changed.connect(self._on_task_status_for_tray)
         
     def _on_task_status_for_tray(self, task_id, status):

@@ -1,6 +1,7 @@
-from PySide6.QtCore import Qt, QRect, Signal, QPoint, QSize
-from PySide6.QtWidgets import QWidget, QRubberBand
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QRubberBand, QWidget
+
 
 class SelectableContainer(QWidget):
     selectionChanged = Signal() # emitted when selection changes
