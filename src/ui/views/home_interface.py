@@ -1,7 +1,7 @@
 import asyncio
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel
-from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont
+from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont, ThemeColor
 from core.crawler import WnacgCrawler
 from core.downloader import downloader_manager
 from core.models import Comic
@@ -87,7 +87,8 @@ class HomeInterface(QWidget):
         setFont(self.backToTopBtn)
         self.backToTopBtn.setFixedSize(40, 40)
         self.backToTopBtn.hide()
-        self.backToTopBtn.setStyleSheet("PrimaryToolButton { border-radius: 20px; background-color: #009faa; border: none; } PrimaryToolButton:hover { background-color: #008b96; }")
+        primary = ThemeColor.PRIMARY.color().name()
+        self.backToTopBtn.setStyleSheet(f"PrimaryToolButton {{ border-radius: 20px; background-color: {primary}; border: none; }}")
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
         
@@ -161,7 +162,8 @@ class HomeInterface(QWidget):
             btn.setFixedHeight(32)
             
             if p == self.current_page:
-                btn.setStyleSheet("background-color: #009faa; color: white; border: none; border-radius: 4px;")
+                primary = ThemeColor.PRIMARY.color().name()
+                btn.setStyleSheet(f"background-color: {primary}; color: white; border: none; border-radius: 4px;")
             else:
                 visible_pages.append(p)
                 

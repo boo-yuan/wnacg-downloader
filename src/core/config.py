@@ -1,7 +1,8 @@
 import json
 from enum import Enum
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 CONFIG_FILE = Path("data/config.json")
 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -11,7 +12,7 @@ class ProxyMode(str, Enum):
     SYSTEM = "system"
     CUSTOM = "custom"
 
-class AppConfig(BaseModel):
+class AppConfig(BaseSettings):
     proxy_mode: ProxyMode = Field(default=ProxyMode.SYSTEM, description="默认代理模式")
     custom_proxy: str = Field(default="http://127.0.0.1:7890", description="自定义代理地址")
     download_dir: str = Field(default="downloads", description="默认下载保存路径")
@@ -36,17 +37,15 @@ class AppConfig(BaseModel):
             f.write(self.model_dump_json(indent=4))
 
 def load_config() -> AppConfig:
+    data = {}
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return AppConfig(**data)
         except Exception:
-            # 解析失败时使用默认配置
             pass
             
-    # 如果文件不存在或解析失败，则创建并保存默认配置
-    c = AppConfig()
+    c = AppConfig(**data)
     c.save()
     return c
 

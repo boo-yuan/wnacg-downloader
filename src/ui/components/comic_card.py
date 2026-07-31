@@ -1,12 +1,12 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QImage, QAction, QContextMenuEvent, QColor
 from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QMenu
-from qfluentwidgets import PrimaryPushButton, CardWidget, CaptionLabel, FluentIcon as FIF
+from qfluentwidgets import PrimaryPushButton, ElevatedCardWidget, CaptionLabel, ThemeColor
 from core.models import Comic, TaskStatus
 import core.db as db
 from ui.components.cover_manager import cover_manager
 
-class ComicCard(CardWidget):
+class ComicCard(ElevatedCardWidget):
     downloadClicked = Signal(Comic)
 
     def __init__(self, comic: Comic, parent=None):
@@ -38,7 +38,7 @@ class ComicCard(CardWidget):
         self.infoLayout = QHBoxLayout()
         self.infoLayout.setContentsMargins(0, 0, 0, 0)
         self.picCountLabel = CaptionLabel(comic.pic_count, self)
-        self.picCountLabel.setTextColor(QColor('#009faa'))
+        self.picCountLabel.setTextColor(ThemeColor.PRIMARY.color())
         self.dateLabel = CaptionLabel(comic.date, self)
         self.dateLabel.setTextColor(QColor('#888888'))
         self.infoLayout.addWidget(self.picCountLabel)
@@ -92,7 +92,8 @@ class ComicCard(CardWidget):
             return
         self._is_selected = selected
         if selected:
-            self.setStyleSheet("ComicCard { border: 2px solid #009faa; background-color: rgba(0, 159, 170, 0.1); border-radius: 8px; }")
+            primary = ThemeColor.PRIMARY.color().name()
+            self.setStyleSheet(f"ComicCard {{ border: 2px solid {primary}; background-color: {primary}1A; border-radius: 8px; }}")
         else:
             self.setStyleSheet("")
             

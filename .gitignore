@@ -186,3 +186,5 @@ app.log
 config.json
 tasks.db
 .temp_covers/
+data/
+downloads/

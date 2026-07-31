@@ -1,6 +1,5 @@
 from curl_cffi.requests import AsyncSession, Session
 from bs4 import BeautifulSoup
-from typing import List, Tuple
 from core.models import Comic
 from core.config import cfg
 from core.logger import logger
@@ -91,7 +90,7 @@ class WnacgCrawler:
         raise Exception("All mirror domains failed")
 
     @classmethod
-    def search_sync(cls, keyword: str, page: int = 1) -> Tuple[List[Comic], int]:
+    def search_sync(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
         """
         同步版本的搜索逻辑，用于后台独立线程，避免多个 asyncio 事件循环导致 curl_cffi 崩溃
         """
@@ -150,7 +149,7 @@ class WnacgCrawler:
             return results, max_page
 
     @classmethod
-    async def search(cls, keyword: str, page: int = 1) -> Tuple[List[Comic], int]:
+    async def search(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
         """
         根据关键字和页码搜索漫画，返回 (结果列表, 当前请求页数（或固定1作为占位）)
         """
@@ -209,7 +208,7 @@ class WnacgCrawler:
             return results, max_page
 
     @classmethod
-    async def get_image_view_links(cls, aid: str) -> List[str]:
+    async def get_image_view_links(cls, aid: str) -> list[str]:
         """
         获取文章页中所有的浏览页(photos-view-id)链接。自动解析分页并抓取所有缩略图链接。
         """
@@ -261,8 +260,9 @@ class WnacgCrawler:
                                 logger.error(f"Failed to fetch page {page_num} of {aid}: {e}")
                         return page_num, []
 
-                    tasks = [fetch_page(p) for p in range(2, max_page + 1)]
-                    results = await asyncio.gather(*tasks)
+                    async with asyncio.TaskGroup() as tg:
+                        tasks = [tg.create_task(fetch_page(p)) for p in range(2, max_page + 1)]
+                    results = [t.result() for t in tasks]
                     
                     # 按页码顺序拼装
                     results.sort(key=lambda x: x[0])

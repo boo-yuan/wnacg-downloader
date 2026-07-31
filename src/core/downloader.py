@@ -298,6 +298,9 @@ class DownloaderWorker(QThread):
                                     
                                 if process_and_save_image(temp_path, Path(task.save_path), idx, raw_url):
                                     db.update_image_status(task_id, idx, 'downloaded')
+                                    task.downloaded_images += 1
+                                    db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+                                    self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
                                     return True
                         except Exception as e:
                             if attempt == 2:
@@ -310,16 +313,15 @@ class DownloaderWorker(QThread):
             images = db.get_images(task_id) # reload status
             
             async with WnacgCrawler.get_client() as client:
-                tasks_coros = [download_image(img) for img in images if img['status'] != 'downloaded']
-                
-                for coro in asyncio.as_completed(tasks_coros):
-                    success = await coro
-                    if cancel_event.is_set():
-                        break
-                    if success:
-                        task.downloaded_images += 1
-                        db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
-                        self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
+                try:
+                    async with asyncio.TaskGroup() as tg:
+                        for img in images:
+                            if img['status'] != 'downloaded':
+                                tg.create_task(download_image(img))
+                except ExceptionGroup as eg:
+                    for exc in eg.exceptions:
+                        logger.error(f"Image download exception: {exc}")
+                    raise Exception("Some images failed to download") from eg
             
             if cancel_event.is_set():
                 # Status already handled by pause_task or cancel_task

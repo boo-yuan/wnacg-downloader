@@ -3,7 +3,7 @@ from curl_cffi.requests import AsyncSession
 from core.logger import logger
 
 class Updater:
-    REPO = "your_github_username/wnacg-downloader" # Ìæ»»ÎªÄúµÄÊµ¼Ê GitHub ²Ö¿â
+    REPO = "boo-yuan/wnacg-downloader"
     CURRENT_VERSION = "v1.0.0"
     API_MIRRORS = [
         "https://api.kkgithub.com/repos/{repo}/releases/latest",
@@ -36,7 +36,7 @@ class Updater:
                         if not download_url and data.get("html_url"):
                             download_url = data.get("html_url")
                             
-                        # Ê¹ÓÃ kkgithub ¾µÏñ¼ÓËÙÏÂÔØ
+                        # ä½¿ç”¨ kkgithub é•œåƒåŠ é€Ÿä¸‹è½½
                         if download_url and "github.com" in download_url:
                             download_url = download_url.replace("github.com", "kkgithub.com")
                             

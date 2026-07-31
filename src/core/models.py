@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 from enum import Enum
 
 class TaskStatus(str, Enum):
@@ -26,4 +25,4 @@ class DownloadTask(BaseModel):
     total_images: int = 0
     downloaded_images: int = 0
     save_path: str = ""
-    error_message: Optional[str] = None
+    error_message: str | None = None
