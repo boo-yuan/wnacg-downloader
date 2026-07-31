@@ -15,7 +15,7 @@ python -c "from PIL import Image; Image.open('src/resource/icon.png').save('src/
 
 echo.
 echo [3/3] Building executable...
-pyinstaller --noconfirm --onefile --windowed --icon "src/resource/icon.ico" --name "WNACG-Downloader" --paths src src/main.py
+pyinstaller --noconfirm --onefile --windowed --icon "src/resource/icon.ico" --add-data "src/resource;resource" --name "WNACG-Downloader" --paths src src/main.py
 
 echo.
 echo ==================================================
