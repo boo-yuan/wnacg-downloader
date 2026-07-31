@@ -405,6 +405,9 @@ class DownloadSettingInterface(BaseSettingInterface):
         cfg.domain = text
         cfg.save()
         
+        from core.crawler import WnacgCrawler
+        WnacgCrawler._active_domain = None
+        
     def _fetch_latest_domains(self):
         self.fetchDomainCard.button.setText("获取中...")
         self.fetchDomainCard.button.setEnabled(False)
@@ -427,7 +430,11 @@ class DownloadSettingInterface(BaseSettingInterface):
         for d in domains:
             if d not in existing:
                 self.domainCard.comboBox.addItem(d)
+                existing.append(d)
                 added += 1
+                
+        from core.crawler import WnacgCrawler
+        WnacgCrawler._mirrors = existing
                 
         from qfluentwidgets import InfoBar, InfoBarPosition
         if added > 0:

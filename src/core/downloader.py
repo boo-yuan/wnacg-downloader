@@ -3,6 +3,7 @@ import os
 import random
 import time
 import uuid
+import threading
 from pathlib import Path
 
 import PIL.Image
@@ -97,6 +98,7 @@ class DownloaderWorker(QThread):
         self._loop = None
         self._active_tasks = {} # task_id -> concurrent.futures.Future
         self._cancel_events = {} # task_id -> asyncio.Event
+        self._lock = threading.RLock()
         self._global_semaphore = None
         self._speed_monitor = SpeedMonitor()
         self._token_bucket = TokenBucket()
@@ -160,14 +162,15 @@ class DownloaderWorker(QThread):
         return name.strip().rstrip('.')
 
     def pause_tasks(self, task_ids: list[str]):
-        for task_id in task_ids:
-            if task_id in self._cancel_events:
-                self._cancel_events[task_id].set()
-            if task_id in self._active_tasks:
-                coro = self._active_tasks.pop(task_id)
-                coro.cancel()
-            db.update_task_status(task_id, TaskStatus.PAUSED)
-            self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
+        with self._lock:
+            for task_id in task_ids:
+                if task_id in self._cancel_events:
+                    self._cancel_events[task_id].set()
+                if task_id in self._active_tasks:
+                    coro = self._active_tasks.pop(task_id)
+                    coro.cancel()
+                db.update_task_status(task_id, TaskStatus.PAUSED)
+                self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
         self._update_badge()
         self._check_queue()
 
@@ -175,10 +178,11 @@ class DownloaderWorker(QThread):
         self.pause_tasks([task_id])
 
     def resume_tasks(self, task_ids: list[str]):
-        for task_id in task_ids:
-            if self._loop and task_id not in self._active_tasks:
-                db.update_task_status(task_id, TaskStatus.PENDING)
-                self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
+        with self._lock:
+            for task_id in task_ids:
+                if self._loop and task_id not in self._active_tasks:
+                    db.update_task_status(task_id, TaskStatus.PENDING)
+                    self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
         self._update_badge()
         self._check_queue()
 
@@ -187,37 +191,41 @@ class DownloaderWorker(QThread):
 
     def _check_queue(self):
         if not self._loop: return
-        if len(self._active_tasks) >= cfg.max_concurrent_tasks: return
         
-        tasks = db.get_all_tasks()
-        pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING and t.id not in self._active_tasks]
-        
-        if pending_tasks:
-            logger.info(f"Checking queue: {len(self._active_tasks)} active, {len(pending_tasks)} pending, max {cfg.max_concurrent_tasks}")
+        with self._lock:
+            if len(self._active_tasks) >= cfg.max_concurrent_tasks: return
             
-        for t in pending_tasks:
-            if len(self._active_tasks) >= cfg.max_concurrent_tasks:
-                break
-            task_id = t.id
-            coro = asyncio.run_coroutine_threadsafe(self._process_task(task_id), self._loop)
-            self._active_tasks[task_id] = coro
-            logger.info(f"Started task {task_id}, active tasks: {len(self._active_tasks)}")
+            tasks = db.get_all_tasks()
+            pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING and t.id not in self._active_tasks]
+            
+            if pending_tasks:
+                logger.info(f"Checking queue: {len(self._active_tasks)} active, {len(pending_tasks)} pending, max {cfg.max_concurrent_tasks}")
+                
+            for t in pending_tasks:
+                if len(self._active_tasks) >= cfg.max_concurrent_tasks:
+                    break
+                task_id = t.id
+                coro = asyncio.run_coroutine_threadsafe(self._process_task(task_id), self._loop)
+                self._active_tasks[task_id] = coro
+                logger.info(f"Started task {task_id}, active tasks: {len(self._active_tasks)}")
+                
             
         self._update_badge()
 
     def cancel_tasks(self, task_ids: list[str]):
-        for task_id in task_ids:
-            task = db.get_task(task_id)
-            if task:
-                if task.status != TaskStatus.COMPLETED:
-                    if task_id in self._cancel_events:
-                        self._cancel_events[task_id].set()
-                    if task_id in self._active_tasks:
-                        coro = self._active_tasks.pop(task_id)
-                        coro.cancel()
-                    # Do not delete the folder to allow keeping already downloaded images
-            db.delete_task(task_id)
-            self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
+        with self._lock:
+            for task_id in task_ids:
+                task = db.get_task(task_id)
+                if task:
+                    if task.status != TaskStatus.COMPLETED:
+                        if task_id in self._cancel_events:
+                            self._cancel_events[task_id].set()
+                        if task_id in self._active_tasks:
+                            coro = self._active_tasks.pop(task_id)
+                            coro.cancel()
+                        # Do not delete the folder to allow keeping already downloaded images
+                db.delete_task(task_id)
+                self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
         self._check_queue()
 
@@ -237,7 +245,11 @@ class DownloaderWorker(QThread):
             task_semaphore = asyncio.Semaphore(max(1, cfg.global_max_connections // max(1, cfg.max_concurrent_tasks)))
             
             cancel_event = asyncio.Event()
-            self._cancel_events[task_id] = cancel_event
+            
+            with self._lock:
+                if task_id not in self._active_tasks:
+                    return # Cancelled before started
+                self._cancel_events[task_id] = cancel_event
             
             db.update_task_status(task_id, TaskStatus.DOWNLOADING)
             self.signals.task_status_changed.emit(task_id, TaskStatus.DOWNLOADING)
@@ -480,10 +492,11 @@ class DownloaderWorker(QThread):
                 self.signals.task_error.emit(task_id, str(e))
                 self.signals.task_status_changed.emit(task_id, TaskStatus.FAILED)
         finally:
-            if task_id in self._cancel_events:
-                del self._cancel_events[task_id]
-            if task_id in self._active_tasks:
-                del self._active_tasks[task_id]
+            with self._lock:
+                if task_id in self._cancel_events:
+                    del self._cancel_events[task_id]
+                if task_id in self._active_tasks:
+                    del self._active_tasks[task_id]
             self._update_badge()
             self._check_queue()
 

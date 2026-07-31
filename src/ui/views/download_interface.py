@@ -263,6 +263,8 @@ class DownloadInterface(QWidget):
         
         self.task_cards = {}
         
+        self._init_empty_state()
+        
         self._load_existing_tasks()
         
         downloader_manager.signals.task_added.connect(self._on_task_added)
@@ -270,7 +272,6 @@ class DownloadInterface(QWidget):
         downloader_manager.signals.task_status_changed.connect(self._on_task_status_changed)
         downloader_manager.signals.task_error.connect(self._on_task_error)
         
-        self._init_empty_state()
         self._update_empty_state()
         
     def _init_empty_state(self):
