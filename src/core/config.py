@@ -17,7 +17,7 @@ class AppConfig(BaseSettings):
     custom_proxy: str = Field(default="http://127.0.0.1:7890", description="自定义代理地址")
     download_dir: str = Field(default="downloads", description="默认下载保存路径")
     domain: str = Field(default="www.wnacg.ru", description="WNACG主域名")
-    download_naming: str = Field(default="sequential", description="下载命名方式：original / sequential")
+    download_naming: str = Field(default="original", description="下载命名方式：original / sequential")
     download_format: str = Field(default="jpg", description="下载格式：original / jpg / png / webp")
     auto_start_download: bool = Field(default=True, description="加入下载队列后是否立即下载")
     max_concurrent_tasks: int = Field(default=2, description="同时下载的最大任务数")

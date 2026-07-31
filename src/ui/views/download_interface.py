@@ -144,12 +144,20 @@ class DownloadInterface(QWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
         
-        # 提示文本
+        # 顶部操作栏与提示文本
+        topBarLayout = QHBoxLayout()
         hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量操作；双击卡片快速暂停/恢复", self)
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
-        hintLayout = QHBoxLayout()
-        hintLayout.addWidget(hintLabel, 0, Qt.AlignmentFlag.AlignCenter)
-        self.vbox.addLayout(hintLayout)
+        
+        self.clearCompletedBtn = PushButton(FIF.DELETE, "清空已完成", self)
+        self.clearCompletedBtn.clicked.connect(self._clear_completed)
+        self.cancelAllBtn = PushButton(FIF.CANCEL, "取消全部任务", self)
+        self.cancelAllBtn.clicked.connect(self._cancel_all)
+        
+        topBarLayout.addWidget(hintLabel, 1, Qt.AlignmentFlag.AlignLeft)
+        topBarLayout.addWidget(self.clearCompletedBtn, 0, Qt.AlignmentFlag.AlignRight)
+        topBarLayout.addWidget(self.cancelAllBtn, 0, Qt.AlignmentFlag.AlignRight)
+        self.vbox.addLayout(topBarLayout)
         
         self.scrollArea = QScrollArea(self)
         self.scrollArea.setWidgetResizable(True)
@@ -263,3 +271,20 @@ class DownloadInterface(QWidget):
                 downloader_manager.cancel_task(item.task.id)
                 item.deleteLater()
         self.scrollWidget.clear_selection()
+
+    def _clear_completed(self):
+        to_remove = []
+        for task_id, card in list(self.task_cards.items()):
+            if card.task.status == TaskStatus.COMPLETED:
+                downloader_manager.cancel_task(task_id)
+                card.deleteLater()
+                to_remove.append(task_id)
+        for tid in to_remove:
+            self.task_cards.pop(tid, None)
+
+    def _cancel_all(self):
+        for task_id, card in list(self.task_cards.items()):
+            if card.task.status != TaskStatus.CANCELED:
+                downloader_manager.cancel_task(task_id)
+                card.deleteLater()
+        self.task_cards.clear()

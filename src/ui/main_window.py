@@ -21,12 +21,17 @@ class MainWindow(FluentWindow):
         self.initNavigation()
         
     def initNavigation(self):
-        self.addSubInterface(self.homeInterface, FIF.HOME, '首页')
-        self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, '下载管理')
+        self.addSubInterface(self.homeInterface, FIF.HOME, '漫画列表')
+        self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, '任务列队')
         
         # 将设置页放置于导航栏底部
         self.addSubInterface(
-            self.settingInterface, FIF.SETTING, '设置', NavigationItemPosition.BOTTOM)
+            self.settingInterface, FIF.SETTING, '全局设置', NavigationItemPosition.BOTTOM)
+            
+        try:
+            self.navigationInterface.setExpandWidth(180)
+        except Exception:
+            pass
             
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
         if item:
