@@ -2,9 +2,27 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QCloseEvent, QAction
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu
 from qfluentwidgets import FluentWindow, NavigationItemPosition, FluentIcon as FIF, InfoBadge, InfoBadgePosition
+from qfluentwidgets import MessageBoxBase, SubtitleLabel, CheckBox, BodyLabel
 import os
 from core.downloader import downloader_manager
 from core.config import cfg
+
+class ClosePromptDialog(MessageBoxBase):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel("确认关闭", self)
+        self.checkbox = CheckBox("记住我的选择，不再提示", self)
+        self.contentLabel = BodyLabel("您想要彻底退出程序，还是将其最小化到系统托盘并在后台运行？", self)
+        
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.contentLabel)
+        self.viewLayout.addWidget(self.checkbox)
+        
+        self.viewLayout.setSpacing(12)
+        self.viewLayout.setContentsMargins(24, 24, 24, 24)
+        
+        self.yesButton.setText("最小化到托盘")
+        self.cancelButton.setText("彻底退出")
 
 from ui.views.home_interface import HomeInterface
 from ui.views.download_interface import DownloadInterface
@@ -147,14 +165,49 @@ class MainWindow(FluentWindow):
         QApplication.quit()
         
     def closeEvent(self, e: QCloseEvent):
-        if cfg.close_to_tray:
-            e.ignore()
-            self.hide()
-            self.trayIcon.showMessage(
-                "已最小化到托盘",
-                "WNACG Downloader 将在后台继续运行",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000
-            )
+        if cfg.show_close_prompt:
+            w = ClosePromptDialog(self.window())
+            if w.exec():
+                if w.checkbox.isChecked():
+                    cfg.show_close_prompt = False
+                    cfg.close_to_tray = True
+                    cfg.save()
+                    
+                    # Update settings UI if we can
+                    try:
+                        self.aboutSettingInterface.closeToTrayCard.setChecked(True)
+                    except:
+                        pass
+                
+                e.ignore()
+                self.hide()
+                self.trayIcon.showMessage(
+                    "已最小化到托盘",
+                    "WNACG Downloader 将在后台继续运行",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000
+                )
+            else:
+                if w.checkbox.isChecked():
+                    cfg.show_close_prompt = False
+                    cfg.close_to_tray = False
+                    cfg.save()
+                    
+                    try:
+                        self.aboutSettingInterface.closeToTrayCard.setChecked(False)
+                    except:
+                        pass
+                        
+                self._force_quit()
         else:
-            super().closeEvent(e)
+            if cfg.close_to_tray:
+                e.ignore()
+                self.hide()
+                self.trayIcon.showMessage(
+                    "已最小化到托盘",
+                    "WNACG Downloader 将在后台继续运行",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000
+                )
+            else:
+                self._force_quit()

@@ -26,6 +26,8 @@ class AppConfig(BaseSettings):
     pack_to_zip: bool = Field(default=True, description="下载完成后是否自动打包为ZIP")
     delete_original_after_pack: bool = Field(default=True, description="打包完成后是否删除原文件夹")
     close_to_tray: bool = Field(default=True, description="关闭主窗口时是否最小化到托盘")
+    show_close_prompt: bool = Field(default=True, description="关闭窗口时是否显示确认弹窗")
+    show_cancel_prompt: bool = Field(default=True, description="取消任务时是否显示确认弹窗")
     global_speed_limit: int = Field(default=0, description="全局下载限速 (KB/s)，0为不限速")
 
     @property

@@ -7,6 +7,27 @@ from core.models import DownloadTask, TaskStatus
 import core.db as db
 from ui.components.selectable_container import SelectableContainer
 from PySide6.QtGui import QAction, QShortcut, QKeySequence
+from qfluentwidgets import MessageBoxBase, SubtitleLabel, CheckBox, BodyLabel
+from core.config import cfg
+
+class CancelPromptDialog(MessageBoxBase):
+    def __init__(self, count=1, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel("确认取消任务", self)
+        self.checkbox = CheckBox("记住我的选择，不再提示", self)
+        
+        text = f"您确定要取消这 {count} 个任务吗？\n取消后任务记录将被移除（已下载的文件将为您保留）。" if count > 1 else "您确定要取消该任务吗？\n取消后任务记录将被移除（已下载的文件将为您保留）。"
+        self.contentLabel = BodyLabel(text, self)
+        
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.contentLabel)
+        self.viewLayout.addWidget(self.checkbox)
+        
+        self.viewLayout.setSpacing(12)
+        self.viewLayout.setContentsMargins(24, 24, 24, 24)
+        
+        self.yesButton.setText("确定取消")
+        self.cancelButton.setText("暂不取消")
 
 class DownloadItemCard(CardWidget):
     def __init__(self, task: DownloadTask, parent=None):
@@ -117,6 +138,14 @@ class DownloadItemCard(CardWidget):
         downloader_manager.resume_task(self.task.id)
         
     def _on_cancel(self):
+        if cfg.show_cancel_prompt:
+            w = CancelPromptDialog(1, self.window())
+            if not w.exec():
+                return
+            if w.checkbox.isChecked():
+                cfg.show_cancel_prompt = False
+                cfg.save()
+                
         downloader_manager.cancel_task(self.task.id)
         self.deleteLater()
 
@@ -351,11 +380,23 @@ class DownloadInterface(QWidget):
         self.scrollWidget.clear_selection()
                 
     def _bulk_cancel(self, items):
+        valid_items = [item for item in items if hasattr(item, 'task') and item.task.status != TaskStatus.CANCELED]
+        if not valid_items:
+            return
+            
+        if cfg.show_cancel_prompt:
+            w = CancelPromptDialog(len(valid_items), self.window())
+            if not w.exec():
+                return
+            if w.checkbox.isChecked():
+                cfg.show_cancel_prompt = False
+                cfg.save()
+                
         task_ids = []
-        for item in items:
-            if hasattr(item, 'task') and item.task.status != TaskStatus.CANCELED:
-                task_ids.append(item.task.id)
-                item.deleteLater()
+        for item in valid_items:
+            task_ids.append(item.task.id)
+            item.deleteLater()
+            
         if task_ids:
             downloader_manager.cancel_tasks(task_ids)
         self.scrollWidget.clear_selection()
@@ -384,11 +425,23 @@ class DownloadInterface(QWidget):
             self._update_empty_state()
 
     def _cancel_all(self):
+        valid_items = [card for task_id, card in self.task_cards.items() if card.task.status != TaskStatus.CANCELED]
+        if not valid_items:
+            return
+            
+        if cfg.show_cancel_prompt:
+            w = CancelPromptDialog(len(valid_items), self.window())
+            if not w.exec():
+                return
+            if w.checkbox.isChecked():
+                cfg.show_cancel_prompt = False
+                cfg.save()
+                
         to_remove = []
-        for task_id, card in list(self.task_cards.items()):
-            if card.task.status != TaskStatus.CANCELED:
-                to_remove.append(task_id)
-                card.deleteLater()
+        for card in valid_items:
+            to_remove.append(card.task.id)
+            card.deleteLater()
+            
         if to_remove:
             downloader_manager.cancel_tasks(to_remove)
         self.task_cards.clear()
