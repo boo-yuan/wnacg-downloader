@@ -122,18 +122,29 @@ class DownloadItemCard(CardWidget):
 
     def _on_open(self):
         import os, platform
-        path = self.task.save_path
-        if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
+        from pathlib import Path
+        path = Path(self.task.save_path)
+        
+        target_path = path
+        if not path.exists() and path.with_suffix('.zip').exists():
+            target_path = path.with_suffix('.zip')
+            
+        if not target_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path = target_path.parent
             
         if platform.system() == 'Windows':
-            os.startfile(path)
+            if target_path.is_file():
+                import subprocess
+                subprocess.run(['explorer', '/select,', str(target_path)])
+            else:
+                os.startfile(str(target_path))
         elif platform.system() == 'Darwin':
             import subprocess
-            subprocess.run(['open', path])
+            subprocess.run(['open', '-R' if target_path.is_file() else '', str(target_path)])
         else:
             import subprocess
-            subprocess.run(['xdg-open', path])
+            subprocess.run(['xdg-open', str(target_path.parent if target_path.is_file() else target_path)])
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
