@@ -23,8 +23,8 @@ class AppConfig(BaseSettings):
     max_concurrent_tasks: int = Field(default=2, description="同时下载的最大任务数")
     global_max_connections: int = Field(default=8, description="全局最大并发下载连接数")
     download_delay: float = Field(default=1.0, description="每张图片下载间的延迟(秒)")
-    pack_to_zip: bool = Field(default=False, description="下载完成后是否自动打包为ZIP")
-    delete_original_after_pack: bool = Field(default=False, description="打包完成后是否删除原文件夹")
+    pack_to_zip: bool = Field(default=True, description="下载完成后是否自动打包为ZIP")
+    delete_original_after_pack: bool = Field(default=True, description="打包完成后是否删除原文件夹")
 
     @property
     def curl_cffi_proxies(self) -> dict | None:

@@ -141,11 +141,16 @@ class DownloaderWorker(QThread):
 
     def cancel_tasks(self, task_ids: list[str]):
         for task_id in task_ids:
-            if task_id in self._cancel_events:
-                self._cancel_events[task_id].set()
-            if task_id in self._active_tasks:
-                coro = self._active_tasks.pop(task_id)
-                coro.cancel()
+            task = db.get_task(task_id)
+            if task:
+                if task.status != TaskStatus.COMPLETED:
+                    if task_id in self._cancel_events:
+                        self._cancel_events[task_id].set()
+                    if task_id in self._active_tasks:
+                        coro = self._active_tasks.pop(task_id)
+                        coro.cancel()
+                    import shutil
+                    shutil.rmtree(Path(task.save_path), ignore_errors=True)
             db.delete_task(task_id)
             self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
