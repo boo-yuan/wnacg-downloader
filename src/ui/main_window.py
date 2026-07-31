@@ -106,7 +106,8 @@ class MainWindow(FluentWindow):
             )
             
         if count > 0:
-            self.downloadBadge.setNum(count)
+            self.downloadBadge.setText(str(count))
+            self.downloadBadge.adjustSize()
             self.downloadBadge.show()
         else:
             self.downloadBadge.hide()
