@@ -50,22 +50,19 @@ class MainWindow(FluentWindow):
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
         if not item: return
         
+        if not hasattr(self, 'downloadBadge') or not self.downloadBadge:
+            self.downloadBadge = InfoBadge.error(
+                count, 
+                parent=item.parent(), 
+                target=item, 
+                position=InfoBadgePosition.NAVIGATION_ITEM
+            )
+            
         if count > 0:
-            if not hasattr(self, 'downloadBadge') or not self.downloadBadge:
-                self.downloadBadge = InfoBadge.error(
-                    count, 
-                    parent=item.parent(), 
-                    target=item, 
-                    position=InfoBadgePosition.NAVIGATION_ITEM
-                )
-            else:
-                self.downloadBadge.setNum(count)
-                self.downloadBadge.show()
+            self.downloadBadge.setNum(count)
+            self.downloadBadge.show()
         else:
-            if hasattr(self, 'downloadBadge') and self.downloadBadge:
-                self.downloadBadge.hide()
-                self.downloadBadge.deleteLater()
-                self.downloadBadge = None
+            self.downloadBadge.hide()
             
     def initWindow(self):
         self.resize(1060, 960)

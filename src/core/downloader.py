@@ -130,12 +130,16 @@ class DownloaderWorker(QThread):
         tasks = db.get_all_tasks()
         pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING and t.id not in self._active_tasks]
         
+        if pending_tasks:
+            logger.info(f"Checking queue: {len(self._active_tasks)} active, {len(pending_tasks)} pending, max {cfg.max_concurrent_tasks}")
+            
         for t in pending_tasks:
             if len(self._active_tasks) >= cfg.max_concurrent_tasks:
                 break
             task_id = t.id
             coro = asyncio.run_coroutine_threadsafe(self._process_task(task_id), self._loop)
             self._active_tasks[task_id] = coro
+            logger.info(f"Started task {task_id}, active tasks: {len(self._active_tasks)}")
             
         self._update_badge()
 
@@ -149,8 +153,7 @@ class DownloaderWorker(QThread):
                     if task_id in self._active_tasks:
                         coro = self._active_tasks.pop(task_id)
                         coro.cancel()
-                    import shutil
-                    shutil.rmtree(Path(task.save_path), ignore_errors=True)
+                    # Do not delete the folder to allow keeping already downloaded images
             db.delete_task(task_id)
             self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
@@ -165,15 +168,15 @@ class DownloaderWorker(QThread):
         self.signals.badge_update.emit(active_count)
 
     async def _process_task(self, task_id: str):
-        task = db.get_task(task_id)
-        if not task: return
-        
-        task_semaphore = asyncio.Semaphore(max(1, cfg.global_max_connections // max(1, cfg.max_concurrent_tasks)))
-        
-        cancel_event = asyncio.Event()
-        self._cancel_events[task_id] = cancel_event
-        
         try:
+            task = db.get_task(task_id)
+            if not task: return
+            
+            task_semaphore = asyncio.Semaphore(max(1, cfg.global_max_connections // max(1, cfg.max_concurrent_tasks)))
+            
+            cancel_event = asyncio.Event()
+            self._cancel_events[task_id] = cancel_event
+            
             db.update_task_status(task_id, TaskStatus.DOWNLOADING)
             self.signals.task_status_changed.emit(task_id, TaskStatus.DOWNLOADING)
             
@@ -189,35 +192,37 @@ class DownloaderWorker(QThread):
             if task.total_images == 0:
                 raise Exception("No images found in index page")
             
-            # Recalculate downloaded_images from local verification
+            # Recalculate downloaded_images from local verification for ALL images
             downloaded_count = 0
             for img in images:
-                if img['status'] == 'downloaded':
-                    naming = cfg.download_naming
-                    target_format = cfg.download_format
-                    raw_url = img['raw_url']
-                    idx = img['image_index']
+                naming = cfg.download_naming
+                target_format = cfg.download_format
+                raw_url = img['raw_url']
+                idx = img['image_index']
+                
+                if naming == "original" and raw_url:
+                    base_name = Path(raw_url).stem
+                else:
+                    base_name = f"{idx+1:03d}"
                     
-                    if naming == "original" and raw_url:
-                        base_name = Path(raw_url).stem
-                    else:
-                        base_name = f"{idx+1:03d}"
+                if target_format == "original":
+                    expected_files = [f"{base_name}{ext}" for ext in ('.jpg', '.png', '.jpeg', '.gif', '.webp')]
+                else:
+                    expected_files = [f"{base_name}.{target_format}"]
+                    
+                valid_found = False
+                for ef in expected_files:
+                    fp = Path(task.save_path) / ef
+                    if await asyncio.to_thread(is_valid_image, fp):
+                        valid_found = True
+                        break
                         
-                    if target_format == "original":
-                        expected_files = [f"{base_name}{ext}" for ext in ('.jpg', '.png', '.jpeg', '.gif', '.webp')]
-                    else:
-                        expected_files = [f"{base_name}.{target_format}"]
-                        
-                    valid_found = False
-                    for ef in expected_files:
-                        fp = Path(task.save_path) / ef
-                        if await asyncio.to_thread(is_valid_image, fp):
-                            valid_found = True
-                            break
-                            
-                    if valid_found:
-                        downloaded_count += 1
-                    else:
+                if valid_found:
+                    downloaded_count += 1
+                    if img['status'] != 'downloaded':
+                        db.update_image_status(task_id, idx, 'downloaded')
+                else:
+                    if img['status'] == 'downloaded':
                         db.update_image_status(task_id, idx, 'pending')
                         
             task.downloaded_images = downloaded_count
@@ -318,7 +323,12 @@ class DownloaderWorker(QThread):
                     
                 for ef in expected_files:
                     fp = Path(task.save_path) / ef
-                    if status == 'downloaded' and await asyncio.to_thread(is_valid_image, fp):
+                    if await asyncio.to_thread(is_valid_image, fp):
+                        if status != 'downloaded':
+                            db.update_image_status(task_id, idx, 'downloaded')
+                            task.downloaded_images += 1
+                            db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+                            self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
                         return True
                 
                 if cancel_event.is_set(): return False
@@ -389,7 +399,7 @@ class DownloaderWorker(QThread):
                 raise Exception("Some images failed to download")
                 
         except Exception as e:
-            if not cancel_event.is_set():
+            if 'cancel_event' not in locals() or not cancel_event.is_set():
                 logger.error(f"Task {task_id} failed: {e}")
                 db.update_task_status(task_id, TaskStatus.FAILED, str(e))
                 self.signals.task_error.emit(task_id, str(e))

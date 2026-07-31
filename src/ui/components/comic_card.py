@@ -105,7 +105,15 @@ class ComicCard(ElevatedCardWidget):
         is_downloaded_on_disk = False
         if save_path.exists():
             try:
-                is_downloaded_on_disk = any(save_path.iterdir())
+                import re
+                m = re.search(r'(\d+)', self.comic.pic_count) if self.comic.pic_count else None
+                if m:
+                    expected_count = int(m.group(1))
+                    actual_count = sum(1 for f in save_path.iterdir() if f.is_file())
+                    if actual_count >= expected_count and expected_count > 0:
+                        is_downloaded_on_disk = True
+                else:
+                    is_downloaded_on_disk = any(save_path.iterdir())
             except Exception:
                 pass
                 
