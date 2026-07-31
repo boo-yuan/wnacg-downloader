@@ -423,9 +423,13 @@ class AboutSettingInterface(BaseSettingInterface):
         )
         self.logCard.clicked.connect(self._open_log_file)
         
+        import os
+        from PySide6.QtGui import QIcon
+        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
+        
         self.helpCard = PushSettingCard(
             text="前往 GitHub",
-            icon=FIF.GITHUB,
+            icon=QIcon(icon_path) if os.path.exists(icon_path) else FIF.GITHUB,
             title="WNACG Downloader",
             content="一款采用 Fluent 设计语言构建的高性能、跨平台 WNACG 漫画离线下载工具",
             parent=self.aboutGroup

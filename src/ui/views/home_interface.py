@@ -44,10 +44,51 @@ class HomeInterface(QWidget):
         self.card_map = {}
         self._old_workers = []
         
+        from PySide6.QtWidgets import QSpacerItem, QSizePolicy
+        
+        # Spacer for vertical centering (top)
+        self.topSpacerWidget = QWidget()
+        self.vbox.addWidget(self.topSpacerWidget, 1)
+        
+        # Hero header
+        self.heroWidget = QWidget(self)
+        heroLayout = QVBoxLayout(self.heroWidget)
+        heroLayout.setContentsMargins(0, 0, 0, 0)
+        heroLayout.setSpacing(12)
+        
+        from qfluentwidgets import TitleLabel, SubtitleLabel, ThemeColor
+        from PySide6.QtGui import QPixmap
+        import os
+        
+        self.logoImage = QLabel(self)
+        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
+        pixmap = QPixmap(icon_path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.logoImage.setPixmap(pixmap)
+        self.logoImage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.logoLabel = TitleLabel("WNACG Downloader", self)
+        self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        primary = ThemeColor.PRIMARY.color().name()
+        self.logoLabel.setStyleSheet(f"color: {primary}; font-size: 28px; font-weight: 900;")
+        
+        self.welcomeLabel = SubtitleLabel("开启您的漫画探索之旅", self)
+        self.welcomeLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.welcomeLabel.setStyleSheet("color: #888888; font-size: 15px;")
+        
+        heroLayout.addWidget(self.logoImage)
+        heroLayout.addWidget(self.logoLabel)
+        heroLayout.addWidget(self.welcomeLabel)
+        heroLayout.addSpacing(32)
+        
+        self.vbox.addWidget(self.heroWidget, 0, Qt.AlignmentFlag.AlignCenter)
+        
         # 顶部搜索栏
         self.searchBar = SearchLineEdit(self)
         self.searchBar.setPlaceholderText("输入漫画名称进行搜索...")
-        self.searchBar.setFixedWidth(400)
+        self.searchBar.setFixedWidth(600)
+        self.searchBar.setMinimumHeight(44)
         self.searchBar.searchSignal.connect(self.do_search)
         self.searchBar.returnPressed.connect(lambda: self.do_search(self.searchBar.text()))
         
@@ -55,12 +96,21 @@ class HomeInterface(QWidget):
         topLayout.addWidget(self.searchBar, 0, Qt.AlignmentFlag.AlignCenter)
         self.vbox.addLayout(topLayout)
         
+        # Spacer for vertical centering (bottom)
+        self.bottomSpacerWidget = QWidget()
+        self.vbox.addWidget(self.bottomSpacerWidget, 2)
+        
+        # Main content container (hidden initially)
+        self.contentWidget = QWidget(self)
+        self.contentLayout = QVBoxLayout(self.contentWidget)
+        self.contentLayout.setContentsMargins(0, 0, 0, 0)
+        
         # 提示文本
         hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量下载", self)
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
         hintLayout = QHBoxLayout()
         hintLayout.addWidget(hintLabel, 0, Qt.AlignmentFlag.AlignCenter)
-        self.vbox.addLayout(hintLayout)
+        self.contentLayout.addLayout(hintLayout)
         
         # 中间滚动区域与流式布局 (展示卡片)
         self.scrollArea = QScrollArea(self)
@@ -79,7 +129,7 @@ class HomeInterface(QWidget):
         self.shortcut_select_all = QShortcut(QKeySequence("Ctrl+A"), self)
         self.shortcut_select_all.activated.connect(self.scrollWidget.select_all)
         
-        self.vbox.addWidget(self.scrollArea)
+        self.contentLayout.addWidget(self.scrollArea)
         downloader_manager.signals.task_added.connect(self._on_task_state_changed)
         downloader_manager.signals.task_status_changed.connect(self._on_task_state_changed)
         self._init_bottom_layout()
@@ -126,8 +176,11 @@ class HomeInterface(QWidget):
         self.bottomWidget = QWidget(self)
         self.paginationLayout = QHBoxLayout(self.bottomWidget)
         self.paginationLayout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.vbox.addWidget(self.bottomWidget)
+        self.contentLayout.addWidget(self.bottomWidget)
         self.bottomWidget.setVisible(False)
+        
+        self.vbox.addWidget(self.contentWidget)
+        self.contentWidget.hide()
         
         self.current_keyword = ""
         self.current_page = 1
@@ -232,6 +285,13 @@ class HomeInterface(QWidget):
 
     def do_search(self, keyword: str):
         if not keyword.strip(): return
+        
+        if self.heroWidget.isVisible():
+            self.heroWidget.hide()
+            self.topSpacerWidget.hide()
+            self.bottomSpacerWidget.hide()
+            self.contentWidget.show()
+            
         self.current_keyword = keyword
         self.current_page = 1
         self._search_cache.clear()

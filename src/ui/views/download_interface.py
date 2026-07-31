@@ -174,8 +174,10 @@ class DownloadInterface(QWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
         
-        # 顶部操作栏与提示文本
-        topBarLayout = QHBoxLayout()
+        self.topBarWidget = QWidget(self)
+        topBarLayout = QHBoxLayout(self.topBarWidget)
+        topBarLayout.setContentsMargins(0, 0, 0, 0)
+        
         hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量操作；双击卡片快速暂停/恢复", self)
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
         
@@ -196,7 +198,7 @@ class DownloadInterface(QWidget):
         topBarLayout.addWidget(self.pauseAllBtn, 0, Qt.AlignmentFlag.AlignRight)
         topBarLayout.addWidget(self.clearCompletedBtn, 0, Qt.AlignmentFlag.AlignRight)
         topBarLayout.addWidget(self.cancelAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        self.vbox.addLayout(topBarLayout)
+        self.vbox.addWidget(self.topBarWidget)
         
         self.scrollArea = QScrollArea(self)
         self.scrollArea.setWidgetResizable(True)
@@ -226,6 +228,48 @@ class DownloadInterface(QWidget):
         downloader_manager.signals.task_status_changed.connect(self._on_task_status_changed)
         downloader_manager.signals.task_error.connect(self._on_task_error)
         
+        self._init_empty_state()
+        self._update_empty_state()
+        
+    def _init_empty_state(self):
+        self.emptyWidget = QWidget(self)
+        emptyLayout = QVBoxLayout(self.emptyWidget)
+        emptyLayout.setSpacing(12)
+        
+        from qfluentwidgets import TitleLabel, SubtitleLabel
+        from PySide6.QtGui import QPixmap
+        import os
+        
+        self.emptyImage = QLabel(self)
+        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
+        pixmap = QPixmap(icon_path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.emptyImage.setPixmap(pixmap)
+        self.emptyImage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.emptyTitle = TitleLabel("暂无下载任务", self)
+        self.emptyTitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.emptyTitle.setStyleSheet("font-size: 28px; font-weight: 900;")
+        
+        self.emptySubtitle = SubtitleLabel("当前队列空空如也，快去添加一些喜欢的漫画吧！", self)
+        self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.emptySubtitle.setStyleSheet("color: #888888; font-size: 15px;")
+        
+        emptyLayout.addStretch(1)
+        emptyLayout.addWidget(self.emptyImage)
+        emptyLayout.addWidget(self.emptyTitle)
+        emptyLayout.addWidget(self.emptySubtitle)
+        emptyLayout.addStretch(2)
+        
+        self.vbox.addWidget(self.emptyWidget, 1)
+        
+    def _update_empty_state(self):
+        has_tasks = len(self.task_cards) > 0
+        self.topBarWidget.setVisible(has_tasks)
+        self.scrollArea.setVisible(has_tasks)
+        self.emptyWidget.setVisible(not has_tasks)
+        
     def _load_existing_tasks(self):
         tasks = db.get_all_tasks()
         for task in tasks:
@@ -237,6 +281,7 @@ class DownloadInterface(QWidget):
         card = DownloadItemCard(task, self.scrollWidget)
         self.listLayout.addWidget(card)
         self.task_cards[task.id] = card
+        self._update_empty_state()
         
     def _on_task_progress(self, task_id, downloaded, total):
         card = self.task_cards.get(task_id)
@@ -248,6 +293,7 @@ class DownloadInterface(QWidget):
         if card:
             if new_status == TaskStatus.CANCELED:
                 del self.task_cards[task_id]
+                self._update_empty_state()
             else:
                 card.set_status(new_status)
             
@@ -334,6 +380,8 @@ class DownloadInterface(QWidget):
             downloader_manager.cancel_tasks(to_remove)
         for tid in to_remove:
             self.task_cards.pop(tid, None)
+        if to_remove:
+            self._update_empty_state()
 
     def _cancel_all(self):
         to_remove = []
@@ -344,3 +392,4 @@ class DownloadInterface(QWidget):
         if to_remove:
             downloader_manager.cancel_tasks(to_remove)
         self.task_cards.clear()
+        self._update_empty_state()
