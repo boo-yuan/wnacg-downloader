@@ -1,6 +1,6 @@
 [project]
 name = "wnacg-downloader"
-version = "0.1.0"
+version = "1.0.0"
 description = "A modern comic download manager"
 authors = [
     { name = "boo-yuan" }
