@@ -1,7 +1,7 @@
 import asyncio
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel
-from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont, ThemeColor
+from qfluentwidgets import SearchLineEdit, FlowLayout, PushButton, PrimaryPushButton, InfoBar, InfoBarPosition, CommandBar, PrimaryToolButton, FluentIcon as FIF, setFont, ThemeColor
 from core.crawler import WnacgCrawler
 from core.downloader import downloader_manager
 from core.models import Comic
@@ -105,12 +105,27 @@ class HomeInterface(QWidget):
         self.contentLayout = QVBoxLayout(self.contentWidget)
         self.contentLayout.setContentsMargins(0, 0, 0, 0)
         
-        # 提示文本
+        self.topBarWidget = QWidget(self)
+        topBarLayout = QHBoxLayout(self.topBarWidget)
+        topBarLayout.setContentsMargins(0, 0, 0, 0)
+        
         hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量下载", self)
         hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
-        hintLayout = QHBoxLayout()
-        hintLayout.addWidget(hintLabel, 0, Qt.AlignmentFlag.AlignCenter)
-        self.contentLayout.addLayout(hintLayout)
+        
+        self.selectAllBtn = PushButton(FIF.CHECKBOX, "全选", self)
+        self.selectAllBtn.clicked.connect(self.scrollWidget.select_all)
+        
+        self.deselectAllBtn = PushButton(FIF.CANCEL, "取消全选", self)
+        self.deselectAllBtn.clicked.connect(self.scrollWidget.clear_selection)
+        
+        self.addToQueueBtn = PrimaryPushButton(FIF.DOWNLOAD, "加入队列", self)
+        self.addToQueueBtn.clicked.connect(self._on_topbar_add_to_queue)
+        
+        topBarLayout.addWidget(hintLabel, 1, Qt.AlignmentFlag.AlignLeft)
+        topBarLayout.addWidget(self.selectAllBtn, 0, Qt.AlignmentFlag.AlignRight)
+        topBarLayout.addWidget(self.deselectAllBtn, 0, Qt.AlignmentFlag.AlignRight)
+        topBarLayout.addWidget(self.addToQueueBtn, 0, Qt.AlignmentFlag.AlignRight)
+        self.contentLayout.addWidget(self.topBarWidget)
         
         # 中间滚动区域与流式布局 (展示卡片)
         self.scrollArea = QScrollArea(self)
@@ -435,4 +450,11 @@ class HomeInterface(QWidget):
         
         self.scrollWidget.clear_selection()
         InfoBar.success("批量操作成功", f"已将 {len(selected_items)} 部漫画加入下载队列", parent=self, position=InfoBarPosition.TOP_RIGHT)
+
+    def _on_topbar_add_to_queue(self):
+        selected_items = self.scrollWidget.get_selected_items()
+        if not selected_items:
+            InfoBar.warning("未选中漫画", "请先使用鼠标点击、框选或按 Ctrl+A 选中要下载的漫画", parent=self, position=InfoBarPosition.TOP_RIGHT)
+            return
+        self._bulk_download(selected_items)
 
