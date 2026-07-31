@@ -25,6 +25,8 @@ class AppConfig(BaseSettings):
     download_delay: float = Field(default=1.0, description="每张图片下载间的延迟(秒)")
     pack_to_zip: bool = Field(default=True, description="下载完成后是否自动打包为ZIP")
     delete_original_after_pack: bool = Field(default=True, description="打包完成后是否删除原文件夹")
+    close_to_tray: bool = Field(default=True, description="关闭主窗口时是否最小化到托盘")
+    global_speed_limit: int = Field(default=0, description="全局下载限速 (KB/s)，0为不限速")
 
     @property
     def curl_cffi_proxies(self) -> dict | None:

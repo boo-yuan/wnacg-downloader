@@ -12,7 +12,8 @@ logger.add(sys.stdout, level="INFO", colorize=True)
 logger.add(
     "app.log", 
     level="INFO", 
-    mode="w", 
+    rotation="5 MB",
+    retention="7 days",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} - {message}",
     enqueue=True, # 确保在多线程(如下载引擎)下写入安全
     encoding="utf-8"

@@ -45,6 +45,13 @@ def init_db():
                 FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
             )
         """)
+        
+        # Versioning for future migrations
+        cursor.execute("PRAGMA user_version;")
+        version = cursor.fetchone()[0]
+        if version == 0:
+            cursor.execute("PRAGMA user_version = 1;")
+            
         conn.commit()
 
 def save_task(task: DownloadTask):

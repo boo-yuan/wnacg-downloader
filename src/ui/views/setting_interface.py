@@ -214,9 +214,21 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.downloadDelayCard.spinBox.setValue(cfg.download_delay)
         self.downloadDelayCard.spinBox.valueChanged.connect(self._on_download_delay_changed)
         
+        self.globalSpeedLimitCard = SpinBoxSettingCard(
+            icon=FIF.SPEED_OFF,
+            title="全局下载限速 (KB/s)",
+            content="设置为 0 表示不限制下载速度",
+            parent=self.concurrentGroup
+        )
+        self.globalSpeedLimitCard.spinBox.setRange(0, 999999)
+        self.globalSpeedLimitCard.spinBox.setSingleStep(100)
+        self.globalSpeedLimitCard.spinBox.setValue(cfg.global_speed_limit)
+        self.globalSpeedLimitCard.spinBox.valueChanged.connect(self._on_global_speed_limit_changed)
+        
         self.concurrentGroup.addSettingCard(self.maxTasksCard)
         self.concurrentGroup.addSettingCard(self.globalConnectionsCard)
         self.concurrentGroup.addSettingCard(self.downloadDelayCard)
+        self.concurrentGroup.addSettingCard(self.globalSpeedLimitCard)
         self.expandLayout.addWidget(self.concurrentGroup)
 
     def _on_proxy_mode_changed(self, index: int):
@@ -238,6 +250,10 @@ class NetworkSettingInterface(BaseSettingInterface):
         
     def _on_download_delay_changed(self, value: float):
         cfg.download_delay = value
+        cfg.save()
+        
+    def _on_global_speed_limit_changed(self, value: int):
+        cfg.global_speed_limit = value
         cfg.save()
 
 
@@ -452,6 +468,16 @@ class AboutSettingInterface(BaseSettingInterface):
             parent=self.aboutGroup
         )
         
+        self.closeToTrayCard = MySwitchSettingCard(
+            icon=FIF.MINIMIZE,
+            title="关闭窗口时最小化到系统托盘",
+            content="开启后点击关闭按钮程序将后台运行下载任务",
+            parent=self.aboutGroup
+        )
+        self.closeToTrayCard.setChecked(cfg.close_to_tray)
+        self.closeToTrayCard.checkedChanged.connect(self._on_close_to_tray_changed)
+        
+        self.aboutGroup.addSettingCard(self.closeToTrayCard)
         self.aboutGroup.addSettingCard(self.logCard)
         self.aboutGroup.addSettingCard(self.helpCard)
         self.aboutGroup.addSettingCard(self.updateCard)
@@ -466,6 +492,10 @@ class AboutSettingInterface(BaseSettingInterface):
             os.startfile(log_path)
         else:
             os.startfile(log_path)
+            
+    def _on_close_to_tray_changed(self, checked: bool):
+        cfg.close_to_tray = checked
+        cfg.save()
 
     def _check_update(self):
         self.updateCard.button.setText("检查中...")

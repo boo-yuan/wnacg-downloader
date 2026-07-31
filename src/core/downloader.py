@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal, QObject
 from core.models import DownloadTask, Comic, TaskStatus
@@ -10,6 +11,59 @@ import core.db as db
 import uuid
 import PIL.Image
 import random
+
+class SpeedMonitor:
+    def __init__(self):
+        self._bytes = 0
+        self._last_time = time.time()
+        self._lock = asyncio.Lock()
+        
+    async def add(self, bytes_count: int):
+        async with self._lock:
+            self._bytes += bytes_count
+            
+    async def get_and_reset(self) -> float:
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self._last_time
+            if elapsed == 0: elapsed = 1e-6
+            speed = self._bytes / elapsed
+            self._bytes = 0
+            self._last_time = now
+            return speed
+
+class TokenBucket:
+    def __init__(self):
+        self._last_update = time.time()
+        self._tokens = 0.0
+        self._lock = asyncio.Lock()
+
+    async def consume(self, amount: int, rate_limit: int):
+        if rate_limit <= 0:
+            return
+            
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self._last_update
+            self._last_update = now
+            self._tokens += elapsed * rate_limit
+            if self._tokens > rate_limit * 2:
+                self._tokens = rate_limit * 2
+                
+            if self._tokens >= amount:
+                self._tokens -= amount
+            else:
+                needed = amount - self._tokens
+                sleep_time = needed / rate_limit
+                # Consume all tokens we have
+                self._tokens = 0
+                # release lock before sleeping
+        
+        if 'needed' in locals() and needed > 0:
+            await asyncio.sleep(sleep_time)
+            # After sleeping, we assume tokens were implicitly generated and consumed
+            async with self._lock:
+                self._last_update = time.time()
 
 def is_valid_image(file_path: Path) -> bool:
     if not file_path.exists() or file_path.stat().st_size == 0:
@@ -31,6 +85,7 @@ class DownloaderSignals(QObject):
     task_status_changed = Signal(str, object) # task_id, TaskStatus enum
     task_error = Signal(str, str) # task_id, error_message
     badge_update = Signal(int) # active tasks count
+    speed_update = Signal(str) # speed formatted string
 
 class DownloaderWorker(QThread):
     def __init__(self):
@@ -40,6 +95,9 @@ class DownloaderWorker(QThread):
         self._active_tasks = {} # task_id -> concurrent.futures.Future
         self._cancel_events = {} # task_id -> asyncio.Event
         self._global_semaphore = None
+        self._speed_monitor = SpeedMonitor()
+        self._token_bucket = TokenBucket()
+        self._monitor_task = None
         
         # Reset any leftover DOWNLOADING tasks to PAUSED on startup
         db.reset_downloading_tasks()
@@ -340,13 +398,23 @@ class DownloaderWorker(QThread):
                         jitter = random.uniform(0.7, 1.3)
                         await asyncio.sleep(cfg.download_delay * jitter)
                         
-                    for attempt in range(3):
+                    for attempt in range(5):
                         if cancel_event.is_set(): return False
                         try:
-                            resp = await client.get(raw_url, timeout=30.0)
+                            # Stream content
+                            resp = await client.get(raw_url, timeout=30.0, stream=True)
                             if resp.status_code == 200:
+                                image_data = bytearray()
+                                async for chunk in resp.aiter_content(chunk_size=16384):
+                                    if cancel_event.is_set():
+                                        return False
+                                    image_data.extend(chunk)
+                                    chunk_len = len(chunk)
+                                    await self._speed_monitor.add(chunk_len)
+                                    await self._token_bucket.consume(chunk_len, cfg.global_speed_limit * 1024)
+                                    
                                 success = await asyncio.to_thread(
-                                    process_and_save_image, resp.content, Path(task.save_path), idx, raw_url
+                                    process_and_save_image, bytes(image_data), Path(task.save_path), idx, raw_url
                                 )
                                 if success:
                                     db.update_image_status(task_id, idx, 'downloaded')
@@ -355,10 +423,11 @@ class DownloaderWorker(QThread):
                                     self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
                                     return True
                         except Exception as e:
-                            if attempt == 2:
-                                logger.error(f"Failed to download image {idx} after 3 attempts: {e}")
+                            if attempt == 4:
+                                logger.error(f"Failed to download image {idx} after 5 attempts: {e}")
                             else:
-                                await asyncio.sleep(2.0)
+                                backoff = 2 ** attempt
+                                await asyncio.sleep(backoff)
                                 
                     return False
 
@@ -414,9 +483,32 @@ class DownloaderWorker(QThread):
             self._update_badge()
             self._check_queue()
 
+    async def _monitor_loop(self):
+        while True:
+            try:
+                speed = await self._speed_monitor.get_and_reset()
+                # formatting speed
+                if speed < 1024:
+                    speed_str = f"{speed:.0f} B/s"
+                elif speed < 1024 * 1024:
+                    speed_str = f"{speed / 1024:.1f} KB/s"
+                else:
+                    speed_str = f"{speed / (1024 * 1024):.2f} MB/s"
+                    
+                # Only emit if there are active tasks
+                if self._active_tasks:
+                    self.signals.speed_update.emit(speed_str)
+                else:
+                    self.signals.speed_update.emit("")
+            except Exception as e:
+                logger.error(f"Monitor loop error: {e}")
+            await asyncio.sleep(1.0)
+
     def run(self):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        
+        self._monitor_task = self._loop.create_task(self._monitor_loop())
         
         # We don't automatically resume PENDING here. UI will trigger resume or we can auto resume.
         # But for robustness, let's auto resume PENDING
