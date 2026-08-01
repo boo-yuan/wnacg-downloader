@@ -112,6 +112,31 @@ class MainWindow(FluentWindow):
         else:
             self.downloadBadge.hide()
             
+        if not hasattr(self, '_previous_count'):
+            self._previous_count = 0
+            
+        if count == 0 and self._previous_count > 0:
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            from PySide6.QtCore import Qt
+            InfoBar.success(
+                title="🎉 下载完成",
+                content="所有列队中的任务均已下载完毕！",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=5000,
+                parent=self
+            )
+            if self.isHidden() or self.isMinimized():
+                self.trayIcon.showMessage(
+                    "下载完成", 
+                    "所有列队中的任务均已下载完毕！",
+                    QSystemTrayIcon.MessageIcon.Information, 
+                    3000
+                )
+                
+        self._previous_count = count
+            
     def initWindow(self):
         self.resize(1060, 960)
         self.setMinimumWidth(600)

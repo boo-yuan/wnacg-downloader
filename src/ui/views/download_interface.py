@@ -31,13 +31,19 @@ class CancelPromptDialog(MessageBoxBase):
     def __init__(self, count=1, parent=None):
         super().__init__(parent)
         self.titleLabel = SubtitleLabel("确认取消任务", self)
-        self.checkbox = CheckBox("记住我的选择，不再提示", self)
         
-        text = f"您确定要取消这 {count} 个任务吗？\n取消后任务记录将被移除（已下载的文件将为您保留）。" if count > 1 else "您确定要取消该任务吗？\n取消后任务记录将被移除（已下载的文件将为您保留）。"
+        text = f"您确定要取消选中的 {count} 个任务吗？\n注意：取消后任务记录将从列表中彻底消失。" if count > 1 else "您确定要取消这个任务吗？\n注意：取消后任务记录将从列表中彻底消失。"
         self.contentLabel = BodyLabel(text, self)
+        
+        self.deleteFilesCheckbox = CheckBox("同时彻底删除已下载到本地的残余文件", self)
+        self.deleteFilesCheckbox.setChecked(cfg.delete_files_on_cancel)
+        self.deleteFilesCheckbox.stateChanged.connect(self._on_delete_files_changed)
+        
+        self.checkbox = CheckBox("记住本次选择，下次直接执行不再弹窗", self)
         
         self.viewLayout.addWidget(self.titleLabel)
         self.viewLayout.addWidget(self.contentLabel)
+        self.viewLayout.addWidget(self.deleteFilesCheckbox)
         self.viewLayout.addWidget(self.checkbox)
         
         self.viewLayout.setSpacing(12)
@@ -45,6 +51,10 @@ class CancelPromptDialog(MessageBoxBase):
         
         self.yesButton.setText("确定取消")
         self.cancelButton.setText("暂不取消")
+        
+    def _on_delete_files_changed(self, state):
+        cfg.delete_files_on_cancel = (state == Qt.CheckState.Checked.value)
+        cfg.save()
 
 class DownloadItemCard(CardWidget):
     def __init__(self, task: DownloadTask, parent=None):
@@ -199,6 +209,8 @@ class DownloadItemCard(CardWidget):
                 self._on_pause()
             elif self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
                 self._on_resume()
+            elif self.task.status == TaskStatus.COMPLETED:
+                self._on_open()
         super().mouseDoubleClickEvent(event)
 
     def setSelected(self, selected: bool):
@@ -303,7 +315,7 @@ class DownloadInterface(QWidget):
     def _show_hint(self):
         InfoBar.info(
             title="💡 操作提示",
-            content="支持鼠标框选 / Shift连选 / Ctrl+A全选\n右键卡片可进行批量操作\n双击卡片可快速暂停/恢复",
+            content="支持鼠标框选 / Shift连选 / Ctrl+A全选\n右键卡片可进行批量操作\n双击卡片可快速暂停/恢复或打开已完成文件夹",
             orient=Qt.Horizontal,
             isClosable=True,
             position=InfoBarPosition.TOP,

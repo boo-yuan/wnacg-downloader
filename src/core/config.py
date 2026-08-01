@@ -31,6 +31,7 @@ class AppConfig(BaseSettings):
     close_to_tray: bool = Field(default=True, description="关闭主窗口时是否最小化到托盘")
     show_close_prompt: bool = Field(default=True, description="关闭窗口时是否显示确认弹窗")
     show_cancel_prompt: bool = Field(default=True, description="取消任务时是否显示确认弹窗")
+    delete_files_on_cancel: bool = Field(default=False, description="取消任务时是否默认删除文件")
     global_speed_limit: int = Field(default=0, description="全局下载限速 (KB/s)，0为不限速")
 
     @property

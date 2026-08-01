@@ -373,6 +373,53 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.sysGroup.addSettingCard(self.domainCard)
         self.sysGroup.addSettingCard(self.fetchDomainCard)
         self.expandLayout.addWidget(self.sysGroup)
+        
+        # 行为与提示设置
+        self.promptGroup = SettingCardGroup("交互与提醒", self.scrollWidget)
+        
+        self.showClosePromptCard = MySwitchSettingCard(
+            icon=FIF.CLOSE,
+            title="退出软件时需要二次确认",
+            content="开启后可防止手滑关闭软件。弹窗内可选择彻底退出或最小化到系统托盘",
+            parent=self.promptGroup
+        )
+        self.showClosePromptCard.setChecked(cfg.show_close_prompt)
+        self.showClosePromptCard.checkedChanged.connect(self._on_show_close_prompt_changed)
+        
+        self.showCancelPromptCard = MySwitchSettingCard(
+            icon=FIF.CANCEL,
+            title="取消任务时需要二次确认",
+            content="防止手滑取消下载。如果在之前的弹窗里勾选了“不再提示”，可以在这里重新恢复开启",
+            parent=self.promptGroup
+        )
+        self.showCancelPromptCard.setChecked(cfg.show_cancel_prompt)
+        self.showCancelPromptCard.checkedChanged.connect(self._on_show_cancel_prompt_changed)
+        
+        self.deleteFilesOnCancelCard = MySwitchSettingCard(
+            icon=FIF.DELETE,
+            title="取消任务时连同文件一起删除",
+            content="开启后，取消任务会自动把下载到一半的残余文件夹和压缩包彻底删掉，释放C盘空间",
+            parent=self.promptGroup
+        )
+        self.deleteFilesOnCancelCard.setChecked(cfg.delete_files_on_cancel)
+        self.deleteFilesOnCancelCard.checkedChanged.connect(self._on_delete_files_on_cancel_changed)
+        
+        self.promptGroup.addSettingCard(self.showClosePromptCard)
+        self.promptGroup.addSettingCard(self.showCancelPromptCard)
+        self.promptGroup.addSettingCard(self.deleteFilesOnCancelCard)
+        self.expandLayout.addWidget(self.promptGroup)
+
+    def _on_show_close_prompt_changed(self, checked: bool):
+        cfg.show_close_prompt = checked
+        cfg.save()
+        
+    def _on_show_cancel_prompt_changed(self, checked: bool):
+        cfg.show_cancel_prompt = checked
+        cfg.save()
+        
+    def _on_delete_files_on_cancel_changed(self, checked: bool):
+        cfg.delete_files_on_cancel = checked
+        cfg.save()
 
     def _on_download_naming_changed(self, index: int):
         modes = ["original", "sequential"]

@@ -223,7 +223,27 @@ class DownloaderWorker(QThread):
                         if task_id in self._active_tasks:
                             coro = self._active_tasks.pop(task_id)
                             coro.cancel()
-                        # Do not delete the folder to allow keeping already downloaded images
+                        
+                    if cfg.delete_files_on_cancel:
+                        try:
+                            import shutil
+                            import os
+                            from core.config import cfg as config
+                            
+                            folder_name = self._clean_filename(task.comic.title)
+                            path = os.path.join(config.download_dir, folder_name)
+                            if os.path.exists(path):
+                                shutil.rmtree(path, ignore_errors=True)
+                                logger.info(f"Deleted local files for canceled task: {path}")
+                                
+                            # Also try to delete zip if it exists
+                            zip_path = path + ".zip"
+                            if os.path.exists(zip_path):
+                                os.remove(zip_path)
+                                logger.info(f"Deleted local zip for canceled task: {zip_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete local files for task {task_id}: {e}")
+                            
                 db.delete_task(task_id)
                 self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()

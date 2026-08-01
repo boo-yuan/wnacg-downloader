@@ -209,6 +209,8 @@ class HomeInterface(QWidget):
                     card.update_download_state()
         
     def _init_bottom_layout(self):
+        self._init_empty_state()
+        
         self.bottomWidget = QWidget(self)
         self.paginationLayout = QHBoxLayout(self.bottomWidget)
         self.paginationLayout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -222,6 +224,40 @@ class HomeInterface(QWidget):
         self.current_page = 1
         self.total_pages = 1
         self.worker = None
+
+    def _init_empty_state(self):
+        self.emptyWidget = QWidget(self)
+        emptyLayout = QVBoxLayout(self.emptyWidget)
+        emptyLayout.setSpacing(12)
+        
+        import os
+        from PySide6.QtGui import QPixmap
+        from qfluentwidgets import SubtitleLabel, TitleLabel
+        
+        self.emptyImage = QLabel(self)
+        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
+        pixmap = QPixmap(icon_path)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.emptyImage.setPixmap(pixmap)
+        self.emptyImage.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.emptyTitle = TitleLabel("未找到相关漫画", self)
+        self.emptyTitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.emptyTitle.setStyleSheet("font-size: 28px; font-weight: 900;")
+        
+        self.emptySubtitle = SubtitleLabel("可能是关键词有误或网络超时，请尝试换个关键词或稍后再试。", self)
+        self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.emptySubtitle.setStyleSheet("color: #888888; font-size: 15px;")
+        
+        emptyLayout.addStretch(1)
+        emptyLayout.addWidget(self.emptyImage)
+        emptyLayout.addWidget(self.emptyTitle)
+        emptyLayout.addWidget(self.emptySubtitle)
+        emptyLayout.addStretch(2)
+        
+        self.contentLayout.addWidget(self.emptyWidget)
+        self.emptyWidget.hide()
 
     def _update_pagination(self):
         # Clear existing
@@ -412,7 +448,12 @@ class HomeInterface(QWidget):
         self._update_pagination()
         
         if not results:
+            self.emptyWidget.show()
+            self.scrollArea.hide()
             InfoBar.warning("搜索结束", "未能找到相关漫画或已经是最后一页", parent=self, position=InfoBarPosition.TOP_RIGHT)
+        else:
+            self.emptyWidget.hide()
+            self.scrollArea.show()
             
         for comic in results:
             card = ComicCard(comic, self.scrollWidget)
