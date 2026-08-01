@@ -12,6 +12,11 @@ from qfluentwidgets import (
     StrongBodyLabel,
     SubtitleLabel,
     TitleLabel,
+    ToolButton,
+    CommandBar,
+    Action,
+    InfoBar,
+    InfoBarPosition,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -216,31 +221,41 @@ class DownloadInterface(QWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
         
-        self.topBarWidget = QWidget(self)
-        topBarLayout = QHBoxLayout(self.topBarWidget)
-        topBarLayout.setContentsMargins(0, 0, 0, 0)
+        self.commandBar = CommandBar(self)
+        self.commandBar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         
-        hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量操作；双击卡片快速暂停/恢复", self)
-        hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
+        self.hintAction = Action(FIF.HELP, "操作提示", self)
+        self.hintAction.triggered.connect(self._show_hint)
+        self.commandBar.addAction(self.hintAction)
+        self.commandBar.addSeparator()
         
-        self.startAllBtn = PushButton(FIF.PLAY, "开始全部", self)
-        self.startAllBtn.clicked.connect(self._start_all)
+        self.selectAllAction = Action(FIF.CHECKBOX, "全选", self)
+        self.selectAllAction.triggered.connect(lambda: self.scrollWidget.select_all())
+        self.commandBar.addAction(self.selectAllAction)
         
-        self.pauseAllBtn = PushButton(FIF.PAUSE, "暂停全部", self)
-        self.pauseAllBtn.clicked.connect(self._pause_all)
+        self.startSelectedAction = Action(FIF.PLAY, "开始任务", self)
+        self.startSelectedAction.triggered.connect(self._start_selected)
+        self.commandBar.addAction(self.startSelectedAction)
         
-        self.clearCompletedBtn = PushButton(FIF.DELETE, "清空已完成", self)
-        self.clearCompletedBtn.clicked.connect(self._clear_completed)
+        self.commandBar.addSeparator()
         
-        self.cancelAllBtn = PushButton(FIF.CANCEL, "取消全部", self)
-        self.cancelAllBtn.clicked.connect(self._cancel_all)
+        self.startAllAction = Action(FIF.PLAY, "全部开始", self)
+        self.startAllAction.triggered.connect(self._start_all)
+        self.commandBar.addAction(self.startAllAction)
         
-        topBarLayout.addWidget(hintLabel, 1, Qt.AlignmentFlag.AlignLeft)
-        topBarLayout.addWidget(self.startAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        topBarLayout.addWidget(self.pauseAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        topBarLayout.addWidget(self.clearCompletedBtn, 0, Qt.AlignmentFlag.AlignRight)
-        topBarLayout.addWidget(self.cancelAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        self.vbox.addWidget(self.topBarWidget)
+        self.pauseAllAction = Action(FIF.PAUSE, "全部暂停", self)
+        self.pauseAllAction.triggered.connect(self._pause_all)
+        self.commandBar.addAction(self.pauseAllAction)
+        
+        self.cancelAllAction = Action(FIF.CANCEL, "全部取消", self)
+        self.cancelAllAction.triggered.connect(self._cancel_all)
+        self.commandBar.addAction(self.cancelAllAction)
+        
+        self.clearCompletedAction = Action(FIF.DELETE, "清空已完成", self)
+        self.clearCompletedAction.triggered.connect(self._clear_completed)
+        self.commandBar.addAction(self.clearCompletedAction)
+        
+        self.vbox.addWidget(self.commandBar)
         
         self.scrollArea = QScrollArea(self)
         self.scrollArea.setWidgetResizable(True)
@@ -273,6 +288,46 @@ class DownloadInterface(QWidget):
         downloader_manager.signals.task_error.connect(self._on_task_error)
         
         self._update_empty_state()
+        
+        # 返回顶部悬浮按钮
+        from qfluentwidgets import PrimaryToolButton, ThemeColor, setFont
+        self.backToTopBtn = PrimaryToolButton(FIF.UP, self)
+        setFont(self.backToTopBtn)
+        self.backToTopBtn.setFixedSize(40, 40)
+        self.backToTopBtn.hide()
+        primary = ThemeColor.PRIMARY.color().name()
+        self.backToTopBtn.setStyleSheet(f"PrimaryToolButton {{ border-radius: 20px; background-color: {primary}; border: none; }}")
+        self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
+        self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        
+    def _show_hint(self):
+        InfoBar.info(
+            title="💡 操作提示",
+            content="支持鼠标框选 / Shift连选 / Ctrl+A全选\n右键卡片可进行批量操作\n双击卡片可快速暂停/恢复",
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self
+        )
+        
+    def _on_scroll(self, value):
+        if value > 300:
+            self.backToTopBtn.show()
+        else:
+            self.backToTopBtn.hide()
+            
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.backToTopBtn.move(self.width() - 80, self.height() - 100)
+        
+    def _start_selected(self):
+        selected = self.scrollWidget.get_selected_items()
+        if not selected:
+            return
+        task_ids = [c.task.id for c in selected if c.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)]
+        if task_ids:
+            downloader_manager.resume_tasks(task_ids)
         
     def _init_empty_state(self):
         self.emptyWidget = QWidget(self)
@@ -309,8 +364,8 @@ class DownloadInterface(QWidget):
         self.vbox.addWidget(self.emptyWidget, 1)
         
     def _update_empty_state(self):
-        has_tasks = len(self.task_cards) > 0
-        self.topBarWidget.setVisible(has_tasks)
+        has_tasks = len(self.task_cards)
+        self.commandBar.setVisible(has_tasks)
         self.scrollArea.setVisible(has_tasks)
         self.emptyWidget.setVisible(not has_tasks)
         
@@ -361,6 +416,12 @@ class DownloadInterface(QWidget):
             selected_items = [target_card]
             
         menu = QMenu(self)
+        
+        action_select_all = QAction("全选", self)
+        action_select_all.triggered.connect(self.scrollWidget.select_all)
+        menu.addAction(action_select_all)
+        
+        menu.addSeparator()
         
         action_resume = QAction(f"开始/继续下载 ({len(selected_items)}项)", self)
         action_resume.triggered.connect(lambda: self._bulk_resume(selected_items))

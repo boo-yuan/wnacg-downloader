@@ -258,8 +258,14 @@ class DownloaderWorker(QThread):
             
             images = db.get_images(task_id)
             if not images:
-                view_links = await WnacgCrawler.get_image_view_links(task.comic.aid)
-                db.save_view_links(task_id, view_links)
+                # 尝试一次性获取所有原图URL
+                raw_urls = await WnacgCrawler.get_all_raw_urls(task.comic.aid)
+                if raw_urls:
+                    db.save_raw_links(task_id, raw_urls)
+                else:
+                    # 退级方案：获取所有分页的 view_links
+                    view_links = await WnacgCrawler.get_image_view_links(task.comic.aid)
+                    db.save_view_links(task_id, view_links)
                 images = db.get_images(task_id)
                 
             task.total_images = len(images)

@@ -181,6 +181,16 @@ def save_view_links(task_id: str, view_links: list[str]):
             """, (task_id, i, link))
         conn.commit()
 
+def save_raw_links(task_id: str, raw_urls: list[str]):
+    with closing(get_conn()) as conn, conn:
+        cursor = conn.cursor()
+        for i, link in enumerate(raw_urls):
+            cursor.execute("""
+                INSERT OR IGNORE INTO images (task_id, image_index, raw_url) 
+                VALUES (?, ?, ?)
+            """, (task_id, i, link))
+        conn.commit()
+
 def get_images(task_id: str):
     with closing(get_conn()) as conn, conn:
         cursor = conn.cursor()

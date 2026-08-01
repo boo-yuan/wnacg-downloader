@@ -221,6 +221,25 @@ class WnacgCrawler:
             return results, max_page
 
     @classmethod
+    async def get_all_raw_urls(cls, aid: str) -> list[str]:
+        """尝试通过画廊页一次性获取所有图片的直链"""
+        async with cls.get_client() as client:
+            try:
+                resp, _ = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
+                def parse_gallery(html):
+                    import re
+                    matches = re.search(r'var\s+imglist\s*=\s*(\[.*?\]);', html, re.DOTALL)
+                    if matches:
+                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?\"(.*?)\"', matches.group(1))
+                        return [f"https:{u}" if u.startswith('//') else u for u in urls]
+                    return []
+                urls = await asyncio.to_thread(parse_gallery, resp.text)
+                return urls
+            except Exception as e:
+                logger.error(f"Failed to get gallery for {aid}: {e}")
+                return []
+
+    @classmethod
     async def get_image_view_links(cls, aid: str) -> list[str]:
         """
         获取文章页中所有的浏览页(photos-view-id)链接。自动解析分页并抓取所有缩略图链接。

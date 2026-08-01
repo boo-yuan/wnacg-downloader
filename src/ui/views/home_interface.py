@@ -10,6 +10,9 @@ from qfluentwidgets import (
     PushButton,
     SearchLineEdit,
     ThemeColor,
+    ToolButton,
+    CommandBar,
+    Action,
     setFont,
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -115,27 +118,24 @@ class HomeInterface(QWidget):
         self.contentLayout = QVBoxLayout(self.contentWidget)
         self.contentLayout.setContentsMargins(0, 0, 0, 0)
         
-        self.topBarWidget = QWidget(self)
-        topBarLayout = QHBoxLayout(self.topBarWidget)
-        topBarLayout.setContentsMargins(0, 0, 0, 0)
+        self.commandBar = CommandBar(self)
+        self.commandBar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         
-        hintLabel = QLabel("💡 提示：支持鼠标框选 / Shift连选 / Ctrl+A全选；右键批量下载", self)
-        hintLabel.setStyleSheet("color: #888888; font-size: 12px;")
+        self.hintAction = Action(FIF.HELP, "操作提示", self)
+        self.hintAction.triggered.connect(self._show_hint)
+        self.commandBar.addAction(self.hintAction)
         
-        self.selectAllBtn = PushButton(FIF.CHECKBOX, "全选", self)
-        self.selectAllBtn.clicked.connect(lambda: self.scrollWidget.select_all())
+        self.commandBar.addSeparator()
         
-        self.deselectAllBtn = PushButton(FIF.CANCEL, "取消全选", self)
-        self.deselectAllBtn.clicked.connect(lambda: self.scrollWidget.clear_selection())
+        self.selectAllAction = Action(FIF.CHECKBOX, "全选", self)
+        self.selectAllAction.triggered.connect(lambda: self.scrollWidget.select_all())
+        self.commandBar.addAction(self.selectAllAction)
         
-        self.addToQueueBtn = PrimaryPushButton(FIF.DOWNLOAD, "加入队列", self)
-        self.addToQueueBtn.clicked.connect(self._on_topbar_add_to_queue)
+        self.addToQueueAction = Action(FIF.DOWNLOAD, "加入队列", self)
+        self.addToQueueAction.triggered.connect(self._on_topbar_add_to_queue)
+        self.commandBar.addAction(self.addToQueueAction)
         
-        topBarLayout.addWidget(hintLabel, 1, Qt.AlignmentFlag.AlignLeft)
-        topBarLayout.addWidget(self.selectAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        topBarLayout.addWidget(self.deselectAllBtn, 0, Qt.AlignmentFlag.AlignRight)
-        topBarLayout.addWidget(self.addToQueueBtn, 0, Qt.AlignmentFlag.AlignRight)
-        self.contentLayout.addWidget(self.topBarWidget)
+        self.contentLayout.addWidget(self.commandBar)
         
         # 中间滚动区域与流式布局 (展示卡片)
         self.scrollArea = QScrollArea(self)
@@ -168,6 +168,17 @@ class HomeInterface(QWidget):
         self.backToTopBtn.setStyleSheet(f"PrimaryToolButton {{ border-radius: 20px; background-color: {primary}; border: none; }}")
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        
+    def _show_hint(self):
+        InfoBar.info(
+            title="💡 操作提示",
+            content="支持鼠标框选 / Shift连选 / Ctrl+A全选\n右键卡片可进行批量下载",
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self
+        )
         
     def _on_scroll(self, value):
         if value > 300:
@@ -438,6 +449,12 @@ class HomeInterface(QWidget):
             selected_items = [target_card]
             
         menu = QMenu(self)
+        
+        action_select_all = QAction("全选", self)
+        action_select_all.triggered.connect(self.scrollWidget.select_all)
+        menu.addAction(action_select_all)
+        
+        menu.addSeparator()
         
         action_add = QAction(f"加入任务队列 ({len(selected_items)}项)", self)
         action_add.triggered.connect(lambda: self._bulk_download(selected_items))
