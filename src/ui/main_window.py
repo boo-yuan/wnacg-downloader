@@ -18,11 +18,17 @@ from core.downloader import downloader_manager
 
 
 class ClosePromptDialog(MessageBoxBase):
-    def __init__(self, parent=None):
+    def __init__(self, active_count=0, parent=None):
         super().__init__(parent)
         self.titleLabel = SubtitleLabel("确认关闭", self)
-        self.checkbox = CheckBox("记住我的选择，不再提示", self)
-        self.contentLabel = BodyLabel("您想要彻底退出程序，还是将其最小化到系统托盘并在后台运行？", self)
+        self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
+        
+        if active_count > 0:
+            text = f"⚠️ 注意：您当前还有 {active_count} 个任务正在下载！\n如果彻底退出，下载将会被强制中断。\n\n建议将其最小化到系统托盘并在后台运行，您要怎么做？"
+            self.contentLabel = BodyLabel(text, self)
+            self.contentLabel.setStyleSheet("color: #d9534f; font-weight: bold;")
+        else:
+            self.contentLabel = BodyLabel("您想要彻底退出程序，还是将其最小化到系统托盘并在后台运行？", self)
         
         self.viewLayout.addWidget(self.titleLabel)
         self.viewLayout.addWidget(self.contentLabel)
@@ -202,7 +208,12 @@ class MainWindow(FluentWindow):
         
     def closeEvent(self, e: QCloseEvent):
         if cfg.show_close_prompt:
-            w = ClosePromptDialog(self.window())
+            import core.db as db
+            from core.models import TaskStatus
+            tasks = db.get_all_tasks()
+            active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
+            
+            w = ClosePromptDialog(active_count, self.window())
             if w.exec():
                 if w.checkbox.isChecked():
                     cfg.show_close_prompt = False
@@ -212,6 +223,7 @@ class MainWindow(FluentWindow):
                     # Update settings UI if we can
                     try:
                         self.aboutSettingInterface.closeToTrayCard.setChecked(True)
+                        self.aboutSettingInterface.showClosePromptCard.setChecked(False)
                     except:
                         pass
                 
@@ -231,6 +243,7 @@ class MainWindow(FluentWindow):
                     
                     try:
                         self.aboutSettingInterface.closeToTrayCard.setChecked(False)
+                        self.aboutSettingInterface.showClosePromptCard.setChecked(False)
                     except:
                         pass
                         

@@ -24,20 +24,23 @@ logger.add(
 
 __all__ = ["logger"]
 
+import traceback
+
 # 捕获全局未处理异常
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.error(f"Uncaught exception:\n{err_msg}")
 
 sys.excepthook = handle_exception
 
 # 捕获子线程中的未处理异常
 import threading
 
-
 def handle_thread_exception(args):
-    logger.error(f"Uncaught thread exception in {args.thread.name}", exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    err_msg = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    logger.error(f"Uncaught thread exception in {args.thread.name}:\n{err_msg}")
 
 threading.excepthook = handle_thread_exception

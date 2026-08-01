@@ -210,6 +210,7 @@ class HomeInterface(QWidget):
         
     def _init_bottom_layout(self):
         self._init_empty_state()
+        self._init_loading_state()
         
         self.bottomWidget = QWidget(self)
         self.paginationLayout = QHBoxLayout(self.bottomWidget)
@@ -258,6 +259,29 @@ class HomeInterface(QWidget):
         
         self.contentLayout.addWidget(self.emptyWidget)
         self.emptyWidget.hide()
+        
+    def _init_loading_state(self):
+        from qfluentwidgets import ProgressRing, SubtitleLabel
+        
+        self.loadingWidget = QWidget(self)
+        loadingLayout = QVBoxLayout(self.loadingWidget)
+        loadingLayout.setSpacing(24)
+        
+        self.progressRing = ProgressRing(self)
+        self.progressRing.setFixedSize(60, 60)
+        self.progressRing.setStrokeWidth(6)
+        
+        self.loadingText = SubtitleLabel("正在跨越长城获取数据...", self)
+        self.loadingText.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loadingText.setStyleSheet("color: #888888; font-size: 16px;")
+        
+        loadingLayout.addStretch(1)
+        loadingLayout.addWidget(self.progressRing, 0, Qt.AlignmentFlag.AlignHCenter)
+        loadingLayout.addWidget(self.loadingText)
+        loadingLayout.addStretch(2)
+        
+        self.contentLayout.addWidget(self.loadingWidget)
+        self.loadingWidget.hide()
 
     def _update_pagination(self):
         # Clear existing
@@ -393,6 +417,10 @@ class HomeInterface(QWidget):
             if widget:
                 widget.deleteLater()
         self.card_map.clear()
+        
+        self.scrollArea.hide()
+        self.emptyWidget.hide()
+        self.loadingWidget.show()
                 
         cache_key = (self.current_keyword, self.current_page)
         if cache_key in self._search_cache:
@@ -432,6 +460,7 @@ class HomeInterface(QWidget):
         self.worker = None
         self.searchBar.setEnabled(True)
         self.bottomWidget.setEnabled(True)
+        self.loadingWidget.hide()
         
         if not results and page > 1:
             total_pages = min(total_pages, page - 1)
@@ -466,6 +495,7 @@ class HomeInterface(QWidget):
             return
             
         self.worker = None
+        self.loadingWidget.hide()
         if page != self.current_page: return
         self.searchBar.setEnabled(True)
         self.bottomWidget.setEnabled(True)

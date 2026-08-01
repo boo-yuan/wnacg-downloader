@@ -21,6 +21,8 @@ from qfluentwidgets import (
     SpinBox,
     SwitchButton,
     setFont,
+    InfoBar,
+    InfoBarPosition,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -146,8 +148,39 @@ class UpdateCheckWorker(QThread):
             loop.close()
             self.finished_signal.emit(result)
         except Exception as e:
-            self.finished_signal.emit({"error": str(e)})
+            self.finished_signal.emit({"has_update": False, "error": str(e)})
 
+class NetworkTestWorker(QThread):
+    finished_signal = Signal(bool, str)
+    
+    def run(self):
+        try:
+            import time
+            from curl_cffi.requests import Session
+            
+            kwargs = {
+                "impersonate": "chrome120",
+                "timeout": 15
+            }
+            if cfg.proxy_mode == "custom":
+                kwargs["proxies"] = cfg.curl_cffi_proxies
+            elif cfg.proxy_mode == "direct":
+                kwargs["trust_env"] = False
+            else:
+                kwargs["trust_env"] = True
+                
+            start_time = time.time()
+            with Session(**kwargs) as s:
+                domain = cfg.domain if cfg.domain.startswith('http') else f"https://{cfg.domain}"
+                r = s.get(domain)
+                
+            elapsed = time.time() - start_time
+            if r.status_code == 200:
+                self.finished_signal.emit(True, f"连接成功！耗时: {elapsed:.2f}s")
+            else:
+                self.finished_signal.emit(False, f"HTTP状态码异常: {r.status_code}")
+        except Exception as e:
+            self.finished_signal.emit(False, f"连接失败: {str(e)}")
 
 class BaseSettingInterface(ScrollArea):
     def __init__(self, parent=None):
@@ -191,10 +224,59 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.customProxyCard.lineEdit.setText(cfg.custom_proxy)
         self.customProxyCard.lineEdit.textChanged.connect(self._on_custom_proxy_changed)
         
+        self.testNetworkCard = PushSettingCard(
+            text="开始测试",
+            icon=FIF.SEND,
+            title="测试网络连通性",
+            content="测试当前代理设置能否成功连接到主域名",
+            parent=self.proxyGroup
+        )
+        self.testNetworkCard.clicked.connect(self._test_network)
+        
+        self.domainCard = EditableComboBoxSettingCard(
+            icon=FIF.GLOBE,
+            title="站点主域名",
+            content="常被墙可随时更换，支持下拉选择备用域名",
+            texts=cfg.backup_domains,
+            parent=self.proxyGroup
+        )
+        self.domainCard.comboBox.setText(cfg.domain)
+        self.domainCard.comboBox.textChanged.connect(self._on_domain_changed)
+        if hasattr(self.domainCard.comboBox, 'currentTextChanged'):
+            self.domainCard.comboBox.currentTextChanged.connect(self._on_domain_changed)
+        
+        self.fetchDomainCard = PushSettingCard(
+            text="获取",
+            icon=FIF.SYNC,
+            title="获取最新备用域名",
+            content="从发布页 (wnacg01.link) 获取最新防屏蔽域名并添加到下拉列表中",
+            parent=self.proxyGroup
+        )
+        self.fetchDomainCard.clicked.connect(self._fetch_latest_domains)
+        
+        self.proxyGroup.addSettingCard(self.domainCard)
+        self.proxyGroup.addSettingCard(self.fetchDomainCard)
         self.proxyGroup.addSettingCard(self.proxyModeCard)
         self.proxyGroup.addSettingCard(self.customProxyCard)
+        self.proxyGroup.addSettingCard(self.testNetworkCard)
         
         self.expandLayout.addWidget(self.proxyGroup)
+        
+    def _test_network(self):
+        self.testNetworkCard.button.setEnabled(False)
+        self.testNetworkCard.button.setText("测试中...")
+        
+        self.test_worker = NetworkTestWorker()
+        self.test_worker.finished_signal.connect(self._on_test_network_finished)
+        self.test_worker.start()
+        
+    def _on_test_network_finished(self, success: bool, msg: str):
+        self.testNetworkCard.button.setEnabled(True)
+        self.testNetworkCard.button.setText("开始测试")
+        if success:
+            InfoBar.success("测试成功", msg, parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
+        else:
+            InfoBar.error("测试失败", msg, parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
         
     def _init_system_settings(self):
         self.concurrentGroup = SettingCardGroup("网络与并发控制", self.scrollWidget)
@@ -273,6 +355,51 @@ class NetworkSettingInterface(BaseSettingInterface):
         cfg.save()
 
 
+    def _on_domain_changed(self, text: str):
+        cfg.domain = text
+        cfg.save()
+        
+        from core.crawler import WnacgCrawler
+        WnacgCrawler._active_domain = None
+        
+    def _fetch_latest_domains(self):
+        self.fetchDomainCard.button.setText("获取中...")
+        self.fetchDomainCard.button.setEnabled(False)
+        self.fetch_worker = DomainFetchWorker(self)
+        self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
+        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
+        self.fetch_worker.start()
+        
+    def _on_domains_fetched(self, domains):
+        self.fetchDomainCard.button.setText("获取")
+        self.fetchDomainCard.button.setEnabled(True)
+        
+        if not domains:
+            InfoBar.error("获取失败", "无法从发布页解析到最新域名，请检查网络", parent=self.window(), position=InfoBarPosition.TOP)
+            return
+            
+        existing = [self.domainCard.comboBox.itemText(i) for i in range(self.domainCard.comboBox.count())]
+        added = 0
+        for d in domains:
+            if d not in existing:
+                self.domainCard.comboBox.addItem(d)
+                existing.append(d)
+                added += 1
+                
+        if added > 0:
+            cfg.backup_domains = existing
+            cfg.save()
+            
+        from core.crawler import WnacgCrawler
+        WnacgCrawler._mirrors = existing
+                
+        if added > 0:
+            InfoBar.success("获取成功", f"已成功添加 {added} 个最新域名到下拉列表中", parent=self.window(), position=InfoBarPosition.TOP)
+            self.domainCard.comboBox.setCurrentIndex(self.domainCard.comboBox.count() - 1)
+        else:
+            InfoBar.warning("已是最新", "发布页中的最新域名已全部存在于列表中", parent=self.window(), position=InfoBarPosition.TOP)
+
+
 class DownloadSettingInterface(BaseSettingInterface):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -348,43 +475,10 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.autoStartCard.checkedChanged.connect(self._on_auto_start_changed)
         
         self.sysGroup.addSettingCard(self.autoStartCard)
-        
-        self.domainCard = EditableComboBoxSettingCard(
-            icon=FIF.GLOBE,
-            title="站点主域名",
-            content="常被墙可随时更换，支持下拉选择备用域名",
-            texts=cfg.backup_domains,
-            parent=self.sysGroup
-        )
-        self.domainCard.comboBox.setText(cfg.domain)
-        self.domainCard.comboBox.textChanged.connect(self._on_domain_changed)
-        if hasattr(self.domainCard.comboBox, 'currentTextChanged'):
-            self.domainCard.comboBox.currentTextChanged.connect(self._on_domain_changed)
-        
-        self.fetchDomainCard = PushSettingCard(
-            text="获取",
-            icon=FIF.SYNC,
-            title="获取最新备用域名",
-            content="从发布页 (wnacg01.link) 获取最新防屏蔽域名并添加到下拉列表中",
-            parent=self.sysGroup
-        )
-        self.fetchDomainCard.clicked.connect(self._fetch_latest_domains)
-        
-        self.sysGroup.addSettingCard(self.domainCard)
-        self.sysGroup.addSettingCard(self.fetchDomainCard)
         self.expandLayout.addWidget(self.sysGroup)
         
         # 行为与提示设置
         self.promptGroup = SettingCardGroup("交互与提醒", self.scrollWidget)
-        
-        self.showClosePromptCard = MySwitchSettingCard(
-            icon=FIF.CLOSE,
-            title="退出软件时需要二次确认",
-            content="开启后可防止手滑关闭软件。弹窗内可选择彻底退出或最小化到系统托盘",
-            parent=self.promptGroup
-        )
-        self.showClosePromptCard.setChecked(cfg.show_close_prompt)
-        self.showClosePromptCard.checkedChanged.connect(self._on_show_close_prompt_changed)
         
         self.showCancelPromptCard = MySwitchSettingCard(
             icon=FIF.CANCEL,
@@ -404,15 +498,10 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.deleteFilesOnCancelCard.setChecked(cfg.delete_files_on_cancel)
         self.deleteFilesOnCancelCard.checkedChanged.connect(self._on_delete_files_on_cancel_changed)
         
-        self.promptGroup.addSettingCard(self.showClosePromptCard)
         self.promptGroup.addSettingCard(self.showCancelPromptCard)
         self.promptGroup.addSettingCard(self.deleteFilesOnCancelCard)
         self.expandLayout.addWidget(self.promptGroup)
 
-    def _on_show_close_prompt_changed(self, checked: bool):
-        cfg.show_close_prompt = checked
-        cfg.save()
-        
     def _on_show_cancel_prompt_changed(self, checked: bool):
         cfg.show_cancel_prompt = checked
         cfg.save()
@@ -450,51 +539,7 @@ class DownloadSettingInterface(BaseSettingInterface):
             cfg.save()
             self.downloadDirCard.setContent(str(Path(directory).absolute()))
             
-    def _on_domain_changed(self, text: str):
-        cfg.domain = text
-        cfg.save()
-        
-        from core.crawler import WnacgCrawler
-        WnacgCrawler._active_domain = None
-        
-    def _fetch_latest_domains(self):
-        self.fetchDomainCard.button.setText("获取中...")
-        self.fetchDomainCard.button.setEnabled(False)
-        self.fetch_worker = DomainFetchWorker(self)
-        self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
-        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
-        self.fetch_worker.start()
-        
-    def _on_domains_fetched(self, domains):
-        self.fetchDomainCard.button.setText("获取")
-        self.fetchDomainCard.button.setEnabled(True)
-        
-        if not domains:
-            from qfluentwidgets import InfoBar, InfoBarPosition
-            InfoBar.error("获取失败", "无法从发布页解析到最新域名，请检查网络", parent=self.window(), position=InfoBarPosition.TOP)
-            return
-            
-        existing = [self.domainCard.comboBox.itemText(i) for i in range(self.domainCard.comboBox.count())]
-        added = 0
-        for d in domains:
-            if d not in existing:
-                self.domainCard.comboBox.addItem(d)
-                existing.append(d)
-                added += 1
-                
-        if added > 0:
-            cfg.backup_domains = existing
-            cfg.save()
-            
-        from core.crawler import WnacgCrawler
-        WnacgCrawler._mirrors = existing
-                
-        from qfluentwidgets import InfoBar, InfoBarPosition
-        if added > 0:
-            InfoBar.success("获取成功", f"已成功添加 {added} 个最新域名到下拉列表中", parent=self.window(), position=InfoBarPosition.TOP)
-            self.domainCard.comboBox.setCurrentIndex(self.domainCard.comboBox.count() - 1)
-        else:
-            InfoBar.warning("已是最新", "发布页中的最新域名已全部存在于列表中", parent=self.window(), position=InfoBarPosition.TOP)
+
 
 
 class AboutSettingInterface(BaseSettingInterface):
@@ -554,7 +599,17 @@ class AboutSettingInterface(BaseSettingInterface):
         self.closeToTrayCard.setChecked(cfg.close_to_tray)
         self.closeToTrayCard.checkedChanged.connect(self._on_close_to_tray_changed)
         
+        self.showClosePromptCard = MySwitchSettingCard(
+            icon=FIF.CLOSE,
+            title="退出软件时需要二次确认",
+            content="开启后可防止手滑关闭软件。弹窗内可选择彻底退出或最小化到系统托盘",
+            parent=self.aboutGroup
+        )
+        self.showClosePromptCard.setChecked(cfg.show_close_prompt)
+        self.showClosePromptCard.checkedChanged.connect(self._on_show_close_prompt_changed)
+        
         self.aboutGroup.addSettingCard(self.closeToTrayCard)
+        self.aboutGroup.addSettingCard(self.showClosePromptCard)
         self.aboutGroup.addSettingCard(self.logCard)
         self.aboutGroup.addSettingCard(self.helpCard)
         self.aboutGroup.addSettingCard(self.updateCard)
@@ -572,6 +627,10 @@ class AboutSettingInterface(BaseSettingInterface):
             
     def _on_close_to_tray_changed(self, checked: bool):
         cfg.close_to_tray = checked
+        cfg.save()
+        
+    def _on_show_close_prompt_changed(self, checked: bool):
+        cfg.show_close_prompt = checked
         cfg.save()
 
     def _check_update(self):
