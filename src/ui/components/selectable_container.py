@@ -35,7 +35,15 @@ class SelectableContainer(QWidget):
             
             if item:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    if self._last_selected_item and self._last_selected_item in items:
+                    is_valid = False
+                    if self._last_selected_item:
+                        try:
+                            _ = self._last_selected_item.objectName()
+                            is_valid = True
+                        except RuntimeError:
+                            self._last_selected_item = None
+                            
+                    if is_valid and self._last_selected_item in items:
                         idx1 = items.index(self._last_selected_item)
                         idx2 = items.index(item)
                         start, end = min(idx1, idx2), max(idx1, idx2)

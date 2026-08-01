@@ -42,9 +42,11 @@ class AppConfig(BaseSettings):
         return None  # DIRECT 和 SYSTEM 可以在外部逻辑中通过不传递 proxies 来处理
 
     def save(self) -> None:
-        """持久化保存配置到本地 JSON 文件"""
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        """持久化保存配置到本地 JSON 文件 (原子写入)"""
+        temp_file = CONFIG_FILE.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
             f.write(self.model_dump_json(indent=4))
+        temp_file.replace(CONFIG_FILE)
 
 def load_config() -> AppConfig:
     data = {}
@@ -52,10 +54,17 @@ def load_config() -> AppConfig:
         try:
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            from core.logger import logger
+            logger.error(f"Failed to parse config.json, using defaults: {e}")
             
-    c = AppConfig(**data)
+    try:
+        c = AppConfig(**data)
+    except Exception as e:
+        from core.logger import logger
+        logger.error(f"Config validation error, resetting invalid fields: {e}")
+        c = AppConfig()
+        
     c.save()
     return c
 

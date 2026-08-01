@@ -506,7 +506,7 @@ class DownloadInterface(QWidget):
                 to_remove.append(task_id)
                 card.deleteLater()
         if to_remove:
-            downloader_manager.cancel_tasks(to_remove)
+            downloader_manager.delete_tasks(to_remove, delete_files=False)
         for tid in to_remove:
             self.task_cards.pop(tid, None)
         if to_remove:

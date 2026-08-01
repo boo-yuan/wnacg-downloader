@@ -161,6 +161,11 @@ class DownloaderWorker(QThread):
         for c in invalid_chars:
             name = name.replace(c, '')
         cleaned = name.strip().rstrip('.')
+        
+        RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"}
+        if cleaned.upper() in RESERVED_NAMES:
+            cleaned = f"{cleaned}_"
+            
         return cleaned if cleaned else fallback_aid
 
     def pause_tasks(self, task_ids: list[str]):
@@ -214,19 +219,19 @@ class DownloaderWorker(QThread):
             
         self._update_badge()
 
-    def cancel_tasks(self, task_ids: list[str]):
+    def delete_tasks(self, task_ids: list[str], delete_files: bool = False):
         with self._lock:
             for task_id in task_ids:
                 task = db.get_task(task_id)
                 if task:
                     if task.status != TaskStatus.COMPLETED:
                         if task_id in self._cancel_events:
-                            self._cancel_events[task_id].set()
+                            self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
                         if task_id in self._active_tasks:
                             coro = self._active_tasks.pop(task_id)
                             coro.cancel()
                         
-                    if cfg.delete_files_on_cancel:
+                    if delete_files and cfg.delete_files_on_cancel:
                         try:
                             import shutil
                             import os
@@ -236,13 +241,12 @@ class DownloaderWorker(QThread):
                             path = os.path.join(config.download_dir, folder_name)
                             if os.path.exists(path):
                                 shutil.rmtree(path, ignore_errors=True)
-                                logger.info(f"Deleted local files for canceled task: {path}")
+                                logger.info(f"Deleted local files for task: {path}")
                                 
-                            # Also try to delete zip if it exists
                             zip_path = path + ".zip"
                             if os.path.exists(zip_path):
                                 os.remove(zip_path)
-                                logger.info(f"Deleted local zip for canceled task: {zip_path}")
+                                logger.info(f"Deleted local zip for task: {zip_path}")
                         except Exception as e:
                             logger.error(f"Failed to delete local files for task {task_id}: {e}")
                             
@@ -250,6 +254,9 @@ class DownloaderWorker(QThread):
                 self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
         self._update_badge()
         self._check_queue()
+
+    def cancel_tasks(self, task_ids: list[str]):
+        self.delete_tasks(task_ids, delete_files=True)
 
     def cancel_task(self, task_id: str):
         self.cancel_tasks([task_id])
@@ -328,7 +335,7 @@ class DownloaderWorker(QThread):
                         db.update_image_status(task_id, idx, 'pending')
                         
             task.downloaded_images = downloaded_count
-            db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+            db.update_task_progress(task_id, task.downloaded_images / max(1, task.total_images), task.downloaded_images, task.total_images)
             self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
             
             if task.downloaded_images >= task.total_images:
@@ -429,7 +436,7 @@ class DownloaderWorker(QThread):
                         if status != 'downloaded':
                             db.update_image_status(task_id, idx, 'downloaded')
                             task.downloaded_images += 1
-                            db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+                            db.update_task_progress(task_id, task.downloaded_images / max(1, task.total_images), task.downloaded_images, task.total_images)
                             self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
                         return True
                 
@@ -462,7 +469,7 @@ class DownloaderWorker(QThread):
                                 if success:
                                     db.update_image_status(task_id, idx, 'downloaded')
                                     task.downloaded_images += 1
-                                    db.update_task_progress(task_id, 0, task.downloaded_images, task.total_images)
+                                    db.update_task_progress(task_id, task.downloaded_images / max(1, task.total_images), task.downloaded_images, task.total_images)
                                     self.signals.task_progress.emit(task_id, task.downloaded_images, task.total_images)
                                     return True
                         except Exception as e:
@@ -566,8 +573,9 @@ class DownloaderWorker(QThread):
 
     def stop(self):
         # Cancel all active tasks to allow clean exit
-        for cancel_event in self._cancel_events.values():
-            cancel_event.set()
+        with self._lock:
+            for cancel_event in self._cancel_events.values():
+                self._loop.call_soon_threadsafe(cancel_event.set)
             
         if self._loop and self._loop.is_running():
             def shutdown_tasks():

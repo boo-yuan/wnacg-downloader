@@ -10,6 +10,8 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA busy_timeout = 30000;")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -176,8 +178,9 @@ def save_view_links(task_id: str, view_links: list[str]):
         cursor = conn.cursor()
         for i, link in enumerate(view_links):
             cursor.execute("""
-                INSERT OR IGNORE INTO images (task_id, image_index, view_url) 
+                INSERT INTO images (task_id, image_index, view_url) 
                 VALUES (?, ?, ?)
+                ON CONFLICT(task_id, image_index) DO UPDATE SET view_url=excluded.view_url
             """, (task_id, i, link))
         conn.commit()
 
@@ -186,8 +189,9 @@ def save_raw_links(task_id: str, raw_urls: list[str]):
         cursor = conn.cursor()
         for i, link in enumerate(raw_urls):
             cursor.execute("""
-                INSERT OR IGNORE INTO images (task_id, image_index, raw_url) 
+                INSERT INTO images (task_id, image_index, raw_url) 
                 VALUES (?, ?, ?)
+                ON CONFLICT(task_id, image_index) DO UPDATE SET raw_url=excluded.raw_url
             """, (task_id, i, link))
         conn.commit()
 

@@ -21,13 +21,13 @@ def main():
     window = MainWindow()
     window.show()
     
-    # 启动后台下载引擎
     from core.downloader import downloader_manager
-    downloader_manager.start()
-    
     from ui.components.cover_manager import cover_manager
     app.aboutToQuit.connect(downloader_manager.stop)
     app.aboutToQuit.connect(cover_manager.stop)
+    
+    # 启动后台下载引擎
+    downloader_manager.start()
     
     sys.exit(app.exec())
 

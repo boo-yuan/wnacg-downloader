@@ -16,7 +16,19 @@ class Updater:
         """
         Returns a dict: {"has_update": bool, "latest_version": str, "release_notes": str, "download_url": str}
         """
-        async with AsyncSession(impersonate="chrome", verify=False) as client:
+        from core.config import cfg
+        kwargs = {
+            "impersonate": "chrome",
+            "verify": False,
+        }
+        if cfg.proxy_mode == "custom":
+            kwargs["proxies"] = cfg.curl_cffi_proxies
+        elif cfg.proxy_mode == "direct":
+            kwargs["trust_env"] = False
+        else: # system
+            kwargs["trust_env"] = True
+            
+        async with AsyncSession(**kwargs) as client:
             for mirror in cls.API_MIRRORS:
                 url = mirror.format(repo=cls.REPO)
                 try:
@@ -41,10 +53,13 @@ class Updater:
                         if download_url and "github.com" in download_url:
                             download_url = download_url.replace("github.com", "kkgithub.com")
                             
-                        has_update = (latest_tag != cls.CURRENT_VERSION)
+                        has_update = False
+                        if latest_tag:
+                            from packaging.version import parse
+                            has_update = parse(latest_tag) > parse(cls.CURRENT_VERSION)
                         
                         return {
-                            "has_update": has_update and latest_tag != "",
+                            "has_update": has_update,
                             "latest_version": latest_tag,
                             "release_notes": body,
                             "download_url": download_url
