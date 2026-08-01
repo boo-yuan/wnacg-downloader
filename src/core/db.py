@@ -3,8 +3,9 @@ from contextlib import closing
 from pathlib import Path
 
 from core.models import Comic, DownloadTask, TaskStatus
+from core.paths import DATA_DIR
 
-DB_PATH = Path("data/tasks.db")
+DB_PATH = DATA_DIR / "tasks.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 def get_conn():

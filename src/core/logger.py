@@ -1,6 +1,7 @@
 import sys
 
 from loguru import logger
+from core.paths import DATA_DIR
 
 # 清除默认的所有 handler
 logger.remove()
@@ -12,8 +13,8 @@ if sys.stdout is not None:
 # 添加文件输出，每次启动时清空覆盖 (mode="w")
 # 只保留 INFO 及以上的重点信息
 logger.add(
-    "app.log", 
-    level="INFO", 
+    str(DATA_DIR / "app.log"), 
+    level="INFO",  
     rotation="5 MB",
     retention="7 days",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} - {message}",

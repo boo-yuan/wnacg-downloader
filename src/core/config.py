@@ -5,8 +5,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-CONFIG_FILE = Path("data/config.json")
-CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+from core.paths import DATA_DIR
+
+CONFIG_FILE = DATA_DIR / "config.json"
 
 class ProxyMode(str, Enum):
     DIRECT = "direct"

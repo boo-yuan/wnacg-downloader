@@ -10,11 +10,25 @@ from PySide6.QtGui import QImage
 from core.config import cfg
 from core.logger import logger
 
-TEMP_DIR = "data/.temp_covers"
+from pathlib import Path
+
+_temp_dirs = set()
+
+def get_temp_dir() -> str:
+    path = str(Path(cfg.download_dir) / ".temp_covers")
+    if path not in _temp_dirs:
+        os.makedirs(path, exist_ok=True)
+        _temp_dirs.add(path)
+    return path
 
 def _cleanup_covers():
+    for d in _temp_dirs:
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
     try:
-        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        shutil.rmtree("data/.temp_covers", ignore_errors=True)
     except Exception:
         pass
 
@@ -32,7 +46,7 @@ class CoverFetchTask(QRunnable):
         
     def run(self):
         filename = hashlib.md5(self.url.encode()).hexdigest() + ".jpg"
-        filepath = os.path.join(TEMP_DIR, filename)
+        filepath = os.path.join(get_temp_dir(), filename)
         
         # 1. Load from disk if exists
         if os.path.exists(filepath):
@@ -86,8 +100,7 @@ class CoverFetchTask(QRunnable):
 class CoverManagerClass(QObject):
     def __init__(self):
         super().__init__()
-        if not os.path.exists(TEMP_DIR):
-            os.makedirs(TEMP_DIR, exist_ok=True)
+        get_temp_dir()
             
         self.pool = QThreadPool.globalInstance()
         # Limit to 5 concurrent cover downloads to prevent anti-bot blocking
@@ -107,7 +120,7 @@ class CoverManagerClass(QObject):
         if not url: return
         
         filename = hashlib.md5(url.encode()).hexdigest() + ".jpg"
-        filepath = os.path.join(TEMP_DIR, filename)
+        filepath = os.path.join(get_temp_dir(), filename)
         
         if os.path.exists(filepath):
             if callback:
