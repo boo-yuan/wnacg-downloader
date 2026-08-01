@@ -50,24 +50,25 @@ class TokenBucket:
             now = time.time()
             elapsed = now - self._last_update
             self._last_update = now
+            
+            # Generate tokens for the elapsed time
             self._tokens += elapsed * rate_limit
+            
+            # Cap tokens at 2x rate_limit to prevent bursting after long idle
             if self._tokens > rate_limit * 2:
                 self._tokens = rate_limit * 2
                 
-            if self._tokens >= amount:
-                self._tokens -= amount
+            # Consume the required amount (can drive tokens negative)
+            self._tokens -= amount
+            
+            if self._tokens >= 0:
+                sleep_time = 0
             else:
-                needed = amount - self._tokens
-                sleep_time = needed / rate_limit
-                # Consume all tokens we have
-                self._tokens = 0
-                # release lock before sleeping
+                # If bucket is negative, calculate time needed to pay off deficit
+                sleep_time = -self._tokens / rate_limit
         
-        if 'needed' in locals() and needed > 0:
+        if sleep_time > 0:
             await asyncio.sleep(sleep_time)
-            # After sleeping, we assume tokens were implicitly generated and consumed
-            async with self._lock:
-                self._last_update = time.time()
 
 def is_valid_image(file_path: Path) -> bool:
     if not file_path.exists() or file_path.stat().st_size == 0:
@@ -137,7 +138,7 @@ class DownloaderWorker(QThread):
                 return existing
 
         task_id = str(uuid.uuid4())
-        save_path = Path(cfg.download_dir) / self._clean_filename(comic.title)
+        save_path = Path(cfg.download_dir) / self._clean_filename(comic.title, comic.aid)
         
         initial_status = TaskStatus.PENDING if cfg.auto_start_download else TaskStatus.PAUSED
         task = DownloadTask(
@@ -155,11 +156,12 @@ class DownloaderWorker(QThread):
             
         return task
         
-    def _clean_filename(self, name: str) -> str:
+    def _clean_filename(self, name: str, fallback_aid: str = "unknown") -> str:
         invalid_chars = '<>:"/\\|?*'
         for c in invalid_chars:
             name = name.replace(c, '')
-        return name.strip().rstrip('.')
+        cleaned = name.strip().rstrip('.')
+        return cleaned if cleaned else fallback_aid
 
     def pause_tasks(self, task_ids: list[str]):
         with self._lock:
@@ -230,7 +232,7 @@ class DownloaderWorker(QThread):
                             import os
                             from core.config import cfg as config
                             
-                            folder_name = self._clean_filename(task.comic.title)
+                            folder_name = self._clean_filename(task.comic.title, task.comic.aid)
                             path = os.path.join(config.download_dir, folder_name)
                             if os.path.exists(path):
                                 shutil.rmtree(path, ignore_errors=True)
@@ -568,7 +570,13 @@ class DownloaderWorker(QThread):
             cancel_event.set()
             
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            def shutdown_tasks():
+                tasks = [t for t in asyncio.all_tasks(self._loop) if t is not asyncio.current_task(self._loop)]
+                for t in tasks:
+                    t.cancel()
+                self._loop.call_later(1.0, self._loop.stop)
+                
+            self._loop.call_soon_threadsafe(shutdown_tasks)
             
         self.wait(2000)
 
