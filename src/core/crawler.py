@@ -235,9 +235,10 @@ class WnacgCrawler:
         """尝试通过画廊页一次性获取所有图片的直链"""
         async with cls.get_client() as client:
             try:
-                resp, _ = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
+                resp, base_url = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
                 def parse_gallery(html, base):
                     import re
+                    import urllib.parse
                     matches = re.search(r'var\s+imglist\s*=\s*(\[.*?\]);', html, re.DOTALL)
                     if matches:
                         urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?[\'\"](.*?)[\'\"]', matches.group(1))

@@ -172,10 +172,7 @@ class DownloaderWorker(QThread):
         with self._lock:
             for task_id in task_ids:
                 if task_id in self._cancel_events:
-                    self._cancel_events[task_id].set()
-                if task_id in self._active_tasks:
-                    coro = self._active_tasks.pop(task_id)
-                    coro.cancel()
+                    self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
                 db.update_task_status(task_id, TaskStatus.PAUSED)
                 self.signals.task_status_changed.emit(task_id, TaskStatus.PAUSED)
         self._update_badge()
@@ -227,10 +224,6 @@ class DownloaderWorker(QThread):
                     if task.status != TaskStatus.COMPLETED:
                         if task_id in self._cancel_events:
                             self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
-                        if task_id in self._active_tasks:
-                            coro = self._active_tasks.pop(task_id)
-                            coro.cancel()
-                        
                     if delete_files and cfg.delete_files_on_cancel:
                         try:
                             import shutil
