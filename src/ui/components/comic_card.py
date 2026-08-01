@@ -94,14 +94,19 @@ class ComicCard(ElevatedCardWidget):
 
     def _get_save_path(self):
         from pathlib import Path
-
         from core.config import cfg
         name = self.comic.title
         invalid_chars = '<>:"/\\|?*'
         for c in invalid_chars:
             name = name.replace(c, '')
-        name = name.strip().rstrip('.')
-        return Path(cfg.download_dir) / name
+        cleaned = name.strip().rstrip('.')
+        
+        RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"}
+        if cleaned.upper() in RESERVED_NAMES:
+            cleaned = f"{cleaned}_"
+            
+        cleaned = cleaned if cleaned else str(self.comic.aid)
+        return Path(cfg.download_dir) / cleaned
 
     _state_updated = Signal(str, bool)
     
@@ -127,7 +132,7 @@ class ComicCard(ElevatedCardWidget):
                 except Exception:
                     pass
                     
-            if not is_downloaded_on_disk and save_path.with_suffix('.zip').exists():
+            if not is_downloaded_on_disk and Path(str(save_path) + '.zip').exists():
                 is_downloaded_on_disk = True
             
             state = "download"
@@ -175,8 +180,8 @@ class ComicCard(ElevatedCardWidget):
         path = self._get_save_path()
         
         target_path = path
-        if not path.exists() and path.with_suffix('.zip').exists():
-            target_path = path.with_suffix('.zip')
+        if not path.exists() and Path(str(path) + '.zip').exists():
+            target_path = Path(str(path) + '.zip')
             
         if not target_path.exists():
             target_path.parent.mkdir(parents=True, exist_ok=True)

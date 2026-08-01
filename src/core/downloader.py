@@ -113,7 +113,7 @@ class DownloaderWorker(QThread):
         for task in tasks:
             if task.status == TaskStatus.COMPLETED:
                 save_path = Path(task.save_path)
-                if not save_path.exists() and not save_path.with_suffix('.zip').exists():
+                if not save_path.exists() and not Path(str(save_path) + '.zip').exists():
                     db.delete_task(task.id)
 
     def add_task(self, comic: Comic) -> DownloadTask:
@@ -505,7 +505,7 @@ class DownloaderWorker(QThread):
                         import shutil
                         import zipfile
                         if not source_dir.exists(): return
-                        zip_path = source_dir.with_suffix('.zip')
+                        zip_path = Path(str(source_dir) + '.zip')
                         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                             for root, dirs, files in os.walk(source_dir):
                                 for file in files:
