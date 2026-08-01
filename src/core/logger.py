@@ -19,7 +19,8 @@ logger.add(
     retention="7 days",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} - {message}",
     enqueue=True, # 确保在多线程(如下载引擎)下写入安全
-    encoding="utf-8"
+    encoding="utf-8",
+    mode="w"
 )
 
 __all__ = ["logger"]

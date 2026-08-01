@@ -49,7 +49,10 @@ class WnacgCrawler:
         return AsyncSession(**kwargs)
         
     _active_domain = None
-    _mirrors = cfg.backup_domains
+
+    @classmethod
+    def get_mirrors(cls):
+        return cfg.backup_domains
 
     @classmethod
     def get_base_url(cls) -> str:
@@ -62,15 +65,19 @@ class WnacgCrawler:
         with cls._domain_lock:
             if not cls._active_domain:
                 cls._active_domain = cfg.domain
-            if cls._active_domain in cls._mirrors:
-                idx = cls._mirrors.index(cls._active_domain)
-                cls._active_domain = cls._mirrors[(idx + 1) % len(cls._mirrors)]
+            mirrors = cls.get_mirrors()
+            if not mirrors:
+                mirrors = [cfg.domain]
+            if cls._active_domain in mirrors:
+                idx = mirrors.index(cls._active_domain)
+                cls._active_domain = mirrors[(idx + 1) % len(mirrors)]
             else:
-                cls._active_domain = cls._mirrors[0]
+                cls._active_domain = mirrors[0]
             logger.warning(f"Switched active domain to {cls._active_domain}")
 
     @classmethod
     def fetch_sync(cls, client, path: str, **kwargs):
+        import time
         for attempt in range(4):
             base_url = cls.get_base_url()
             url = f"{base_url}{path}"
@@ -81,10 +88,12 @@ class WnacgCrawler:
             except Exception as e:
                 logger.warning(f"Fetch failed on {base_url}: {e}")
                 cls.switch_domain()
+                time.sleep(1.0 * (2 ** attempt))
         raise Exception("All mirror domains failed")
 
     @classmethod
     async def fetch(cls, client, path: str, **kwargs):
+        import asyncio
         for attempt in range(4):
             base_url = cls.get_base_url()
             url = f"{base_url}{path}"
@@ -95,6 +104,7 @@ class WnacgCrawler:
             except Exception as e:
                 logger.warning(f"Fetch failed on {base_url}: {e}")
                 cls.switch_domain()
+                await asyncio.sleep(1.0 * (2 ** attempt))
         raise Exception("All mirror domains failed")
 
     @classmethod
@@ -130,7 +140,7 @@ class WnacgCrawler:
                 info_col = item.select_one('.info_col')
                 if info_col:
                     text = info_col.text.strip()
-                    m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
+                    m_pic = re.search(r'(\d+)\s*张', text)
                     if m_pic:
                         pic_count = f"{m_pic.group(1)}图"
                     m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
@@ -192,7 +202,7 @@ class WnacgCrawler:
                     info_col = item.select_one('.info_col')
                     if info_col:
                         text = info_col.text.strip()
-                        m_pic = re.search(r'(\d+)', text.split('\n')[0] if '\n' in text else text)
+                        m_pic = re.search(r'(\d+)\s*张', text)
                         if m_pic:
                             pic_count = f"{m_pic.group(1)}图"
                         m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
@@ -226,14 +236,14 @@ class WnacgCrawler:
         async with cls.get_client() as client:
             try:
                 resp, _ = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
-                def parse_gallery(html):
+                def parse_gallery(html, base):
                     import re
                     matches = re.search(r'var\s+imglist\s*=\s*(\[.*?\]);', html, re.DOTALL)
                     if matches:
-                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?\"(.*?)\"', matches.group(1))
-                        return [f"https:{u}" if u.startswith('//') else u for u in urls]
+                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?[\'\"](.*?)[\'\"]', matches.group(1))
+                        return [f"https:{u}" if u.startswith('//') else urllib.parse.urljoin(base, u) for u in urls]
                     return []
-                urls = await asyncio.to_thread(parse_gallery, resp.text)
+                urls = await asyncio.to_thread(parse_gallery, resp.text, base_url)
                 return urls
             except Exception as e:
                 logger.error(f"Failed to get gallery for {aid}: {e}")
@@ -258,10 +268,7 @@ class WnacgCrawler:
                     for pic in pics:
                         href = pic.get('href')
                         if href:
-                            if href.startswith('/'):
-                                links.append(f"{base_url}{href}")
-                            else:
-                                links.append(href)
+                            links.append(urllib.parse.urljoin(base_url, href))
                     m_page = 1
                     paginator = soup.select_one('.f_left.paginator')
                     if paginator:
@@ -286,10 +293,7 @@ class WnacgCrawler:
                                     for pic in p_pics:
                                         href = pic.get('href')
                                         if href:
-                                            if href.startswith('/'):
-                                                links.append(f"{base_url}{href}")
-                                            else:
-                                                links.append(href)
+                                            links.append(urllib.parse.urljoin(base_url, href))
                                     return links
                                 links = await asyncio.to_thread(parse_other_page, r.text)
                                 return page_num, links
@@ -320,6 +324,8 @@ class WnacgCrawler:
             try:
                 from urllib.parse import urlparse
                 path = urlparse(view_url).path
+                if not path.startswith('/'):
+                    path = '/' + path
                 resp, _ = await cls.fetch(c, path, allow_redirects=True, timeout=15.0)
                 
                 def parse_raw(html):

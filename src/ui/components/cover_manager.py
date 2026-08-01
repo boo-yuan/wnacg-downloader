@@ -118,16 +118,7 @@ class CoverManagerClass(QObject):
         
     def load(self, url, callback=None):
         if not url: return
-        
-        filename = hashlib.md5(url.encode()).hexdigest() + ".jpg"
-        filepath = os.path.join(get_temp_dir(), filename)
-        
-        if os.path.exists(filepath):
-            if callback:
-                img = QImage(filepath)
-                callback(url, img)
-            return
-            
+        # Disk cache loading is handled asynchronously inside CoverFetchTask.
         if url in self._pending_callbacks:
             if callback:
                 self._pending_callbacks[url].append(callback)
@@ -147,6 +138,9 @@ class CoverManagerClass(QObject):
                 if cb:
                     try:
                         cb(url, img)
+                    except RuntimeError:
+                        # The UI component (like ComicCard) has been deleted
+                        pass
                     except Exception as e:
                         logger.error(f"Callback error in CoverManager: {e}")
 

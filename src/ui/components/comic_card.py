@@ -73,6 +73,7 @@ class ComicCard(ElevatedCardWidget):
         total_h = 12 + 250 + 6 + title_h + 6 + 20 + 6 + 32 + 12
         self.setFixedHeight(total_h)
         
+        self._state_updated.connect(self._apply_download_state)
         self.update_download_state()
         
         self.loader = None
@@ -102,45 +103,58 @@ class ComicCard(ElevatedCardWidget):
         name = name.strip().rstrip('.')
         return Path(cfg.download_dir) / name
 
+    _state_updated = Signal(str, bool)
+    
     def update_download_state(self):
-        task = db.get_task_by_aid(self.comic.aid)
-        save_path = self._get_save_path()
+        import threading
         
-        is_downloaded_on_disk = False
-        if save_path.exists():
-            try:
-                import re
-                m = re.search(r'(\d+)', self.comic.pic_count) if self.comic.pic_count else None
-                if m:
-                    expected_count = int(m.group(1))
-                    actual_count = sum(1 for f in save_path.iterdir() if f.is_file())
-                    if actual_count >= expected_count and expected_count > 0:
-                        is_downloaded_on_disk = True
+        def worker():
+            task = db.get_task_by_aid(self.comic.aid)
+            save_path = self._get_save_path()
+            
+            is_downloaded_on_disk = False
+            if save_path.exists():
+                try:
+                    import re
+                    m = re.search(r'(\d+)', self.comic.pic_count) if self.comic.pic_count else None
+                    if m:
+                        expected_count = int(m.group(1))
+                        actual_count = sum(1 for f in save_path.iterdir() if f.is_file())
+                        if actual_count >= expected_count and expected_count > 0:
+                            is_downloaded_on_disk = True
+                    else:
+                        is_downloaded_on_disk = any(save_path.iterdir())
+                except Exception:
+                    pass
+                    
+            if not is_downloaded_on_disk and save_path.with_suffix('.zip').exists():
+                is_downloaded_on_disk = True
+            
+            state = "download"
+            if task:
+                if task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
+                    state = "queued"
+                elif task.status == TaskStatus.COMPLETED:
+                    state = "downloaded"
                 else:
-                    is_downloaded_on_disk = any(save_path.iterdir())
-            except Exception:
-                pass
-                
-        if not is_downloaded_on_disk and save_path.with_suffix('.zip').exists():
-            is_downloaded_on_disk = True
-        
-        state = "download"
-        if task:
-            if task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
-                state = "queued"
-            elif task.status == TaskStatus.COMPLETED:
-                state = "downloaded"
+                    if is_downloaded_on_disk:
+                        state = "downloaded"
+                    else:
+                        state = "download"
             else:
                 if is_downloaded_on_disk:
                     state = "downloaded"
                 else:
                     state = "download"
-        else:
-            if is_downloaded_on_disk:
-                state = "downloaded"
-            else:
-                state = "download"
+                    
+            try:
+                self._state_updated.emit(state, task is not None)
+            except RuntimeError:
+                pass
                 
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_download_state(self, state: str, has_task: bool):
         if state == "queued":
             self.downloadBtn.setVisible(True)
             self.openBtn.setVisible(False)
@@ -152,7 +166,7 @@ class ComicCard(ElevatedCardWidget):
         else:
             self.downloadBtn.setVisible(True)
             self.openBtn.setVisible(False)
-            self.downloadBtn.setText("一键下载" if not task else "重新下载")
+            self.downloadBtn.setText("一键下载" if not has_task else "重新下载")
             self.downloadBtn.setEnabled(True)
 
     def _on_open_clicked(self):

@@ -22,6 +22,10 @@ def get_data_dir() -> Path:
                         shutil.copy2(item, dest)
                     elif item.is_dir():
                         shutil.copytree(item, dest)
+            try:
+                shutil.rmtree("data.bak", ignore_errors=True)
+            except Exception:
+                pass
             old_data.rename("data.bak")
         except Exception:
             pass

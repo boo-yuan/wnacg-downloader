@@ -621,9 +621,9 @@ class AboutSettingInterface(BaseSettingInterface):
         if not log_path.exists():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write("暂无日志记录\n")
-            os.startfile(log_path)
-        else:
-            os.startfile(log_path)
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path)))
             
     def _on_close_to_tray_changed(self, checked: bool):
         cfg.close_to_tray = checked
@@ -638,6 +638,7 @@ class AboutSettingInterface(BaseSettingInterface):
         self.updateCard.button.setEnabled(False)
         self.updateWorker = UpdateCheckWorker(self)
         self.updateWorker.finished_signal.connect(self._on_update_checked)
+        self.updateWorker.finished.connect(self.updateWorker.deleteLater)
         self.updateWorker.start()
 
     def _on_update_checked(self, result: dict):

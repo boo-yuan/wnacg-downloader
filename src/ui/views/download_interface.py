@@ -404,6 +404,8 @@ class DownloadInterface(QWidget):
         if card:
             if new_status == TaskStatus.CANCELED:
                 del self.task_cards[task_id]
+                self.listLayout.removeWidget(card)
+                card.deleteLater()
                 self._update_empty_state()
             else:
                 card.set_status(new_status)
@@ -483,6 +485,7 @@ class DownloadInterface(QWidget):
         task_ids = []
         for item in valid_items:
             task_ids.append(item.task.id)
+            self.listLayout.removeWidget(item)
             item.deleteLater()
             
         if task_ids:
@@ -504,6 +507,7 @@ class DownloadInterface(QWidget):
         for task_id, card in list(self.task_cards.items()):
             if card.task.status == TaskStatus.COMPLETED:
                 to_remove.append(task_id)
+                self.listLayout.removeWidget(card)
                 card.deleteLater()
         if to_remove:
             downloader_manager.delete_tasks(to_remove, delete_files=False)
@@ -528,6 +532,7 @@ class DownloadInterface(QWidget):
         to_remove = []
         for card in valid_items:
             to_remove.append(card.task.id)
+            self.listLayout.removeWidget(card)
             card.deleteLater()
             
         if to_remove:

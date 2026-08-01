@@ -187,7 +187,7 @@ class DownloaderWorker(QThread):
     def resume_tasks(self, task_ids: list[str]):
         with self._lock:
             for task_id in task_ids:
-                if self._loop and task_id not in self._active_tasks:
+                if self._loop:
                     db.update_task_status(task_id, TaskStatus.PENDING)
                     self.signals.task_status_changed.emit(task_id, TaskStatus.PENDING)
         self._update_badge()
@@ -388,6 +388,8 @@ class DownloaderWorker(QThread):
                         return False
                 except Exception as e:
                     logger.error(f"Image processing failed for {raw_url}: {e}")
+                    if 'final_path' in locals() and final_path.exists():
+                        final_path.unlink(missing_ok=True)
                     return False
             
             async def download_image(img_dict):
@@ -570,6 +572,10 @@ class DownloaderWorker(QThread):
                 self.resume_task(task.id)
                 
         self._loop.run_forever()
+        try:
+            self._loop.close()
+        except Exception:
+            pass
 
     def stop(self):
         # Cancel all active tasks to allow clean exit
