@@ -121,26 +121,6 @@ class MainWindow(FluentWindow):
         if not hasattr(self, '_previous_count'):
             self._previous_count = 0
             
-        if count == 0 and self._previous_count > 0:
-            from qfluentwidgets import InfoBar, InfoBarPosition
-            from PySide6.QtCore import Qt
-            InfoBar.success(
-                title="🎉 下载完成",
-                content="所有列队中的任务均已下载完毕！",
-                orient=Qt.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=5000,
-                parent=self
-            )
-            if self.isHidden() or self.isMinimized():
-                self.trayIcon.showMessage(
-                    "下载完成", 
-                    "所有列队中的任务均已下载完毕！",
-                    QSystemTrayIcon.MessageIcon.Information, 
-                    3000
-                )
-                
         self._previous_count = count
             
     def initWindow(self):
@@ -179,16 +159,39 @@ class MainWindow(FluentWindow):
         
     def _on_task_status_for_tray(self, task_id, status):
         from core.models import TaskStatus
-        if status == TaskStatus.COMPLETED and self.isHidden():
-            import core.db as db
-            task = db.get_task(task_id)
-            if task:
-                self.trayIcon.showMessage(
-                    "下载完成", 
-                    f"《{task.comic.title}》已下载完毕",
-                    QSystemTrayIcon.MessageIcon.Information, 
-                    3000
+        import core.db as db
+        if status == TaskStatus.COMPLETED:
+            tasks = db.get_all_tasks()
+            active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
+            
+            if active_count == 0:
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                from PySide6.QtCore import Qt
+                InfoBar.success(
+                    title="🎉 下载大满贯！",
+                    content="队列里的漫画全都下完啦，快去欣赏吧。",
+                    orient=Qt.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=5000,
+                    parent=self
                 )
+                if self.isHidden() or self.isMinimized():
+                    self.trayIcon.showMessage(
+                        "🎉 任务全部完成", 
+                        "您挂机的下载队列已经全部搞定！",
+                        QSystemTrayIcon.MessageIcon.Information, 
+                        3000
+                    )
+            elif self.isHidden() or self.isMinimized():
+                task = db.get_task(task_id)
+                if task:
+                    self.trayIcon.showMessage(
+                        "✅ 单本下载成功", 
+                        f"《{task.comic.title}》已经下好啦，躺在硬盘里等您翻阅。",
+                        QSystemTrayIcon.MessageIcon.Information, 
+                        3000
+                    )
 
     def _show_window(self):
         self.showNormal()

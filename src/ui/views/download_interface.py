@@ -263,7 +263,8 @@ class DownloadInterface(QWidget):
         self.cancelAllAction.triggered.connect(self._cancel_all)
         self.commandBar.addAction(self.cancelAllAction)
         
-        self.clearCompletedAction = Action(FIF.DELETE, "清空已完成", self)
+        self.clearCompletedAction = Action(FIF.DELETE, "清除已完成记录", self)
+        self.clearCompletedAction.setToolTip("仅从列表中移除记录，您的漫画文件非常安全，不会被删除")
         self.clearCompletedAction.triggered.connect(self._clear_completed)
         self.commandBar.addAction(self.clearCompletedAction)
         
@@ -363,7 +364,7 @@ class DownloadInterface(QWidget):
         self.emptyTitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.emptyTitle.setStyleSheet("font-size: 28px; font-weight: 900;")
         
-        self.emptySubtitle = SubtitleLabel("当前队列空空如也，快去添加一些喜欢的漫画吧！", self)
+        self.emptySubtitle = SubtitleLabel("暂无下载任务 / 你的下载列表很干净，快去主页搜索喜欢的漫画吧！", self)
         self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.emptySubtitle.setStyleSheet("color: #888888; font-size: 15px;")
         
@@ -437,6 +438,12 @@ class DownloadInterface(QWidget):
         
         menu.addSeparator()
         
+        if len(selected_items) == 1:
+            action_open = QAction("打开所在文件夹", self)
+            action_open.triggered.connect(lambda: selected_items[0]._on_open())
+            menu.addAction(action_open)
+            menu.addSeparator()
+        
         action_resume = QAction(f"开始/继续下载 ({len(selected_items)}项)", self)
         action_resume.triggered.connect(lambda: self._bulk_resume(selected_items))
         menu.addAction(action_resume)
@@ -496,11 +503,13 @@ class DownloadInterface(QWidget):
         task_ids = [card.task.id for card in self.task_cards.values() if card.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)]
         if task_ids:
             downloader_manager.resume_tasks(task_ids)
+            InfoBar.success("🚀 批量启动", "已唤醒所有待命的任务，火力全开！", parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
     def _pause_all(self):
         task_ids = [card.task.id for card in self.task_cards.values() if card.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)]
         if task_ids:
             downloader_manager.pause_tasks(task_ids)
+            InfoBar.warning("⏸️ 紧急刹车", "正在下载的任务已全部暂停", parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
     def _clear_completed(self):
         to_remove = []
@@ -515,6 +524,7 @@ class DownloadInterface(QWidget):
             self.task_cards.pop(tid, None)
         if to_remove:
             self._update_empty_state()
+            InfoBar.success("🧹 列表清理完成", "已抹除全部完成记录，保持界面清爽（您的文件完好无损）", parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
     def _cancel_all(self):
         valid_items = [card for task_id, card in self.task_cards.items() if card.task.status != TaskStatus.CANCELED]

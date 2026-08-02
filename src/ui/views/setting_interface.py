@@ -274,9 +274,9 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.testNetworkCard.button.setEnabled(True)
         self.testNetworkCard.button.setText("开始测试")
         if success:
-            InfoBar.success("测试成功", msg, parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
+            InfoBar.success("⚡ 网络测试通过", "连接非常顺畅，这套代理或域名没问题！", parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
         else:
-            InfoBar.error("测试失败", msg, parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
+            InfoBar.error("❌ 无法连接到网站", "可能是代理没配对，或者当前的 WNACG 域名失效了", parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
         
     def _init_system_settings(self):
         self.concurrentGroup = SettingCardGroup("下载性能调节", self.scrollWidget)
@@ -375,7 +375,7 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.fetchDomainCard.button.setEnabled(True)
         
         if not domains:
-            InfoBar.error("获取失败", "无法从发布页解析到最新域名，请检查网络", parent=self.window(), position=InfoBarPosition.TOP)
+            InfoBar.error("❌ 获取失败", "无法从发布页获取数据，请检查网络", parent=self.window(), position=InfoBarPosition.TOP)
             return
             
         existing = [self.domainCard.comboBox.itemText(i) for i in range(self.domainCard.comboBox.count())]
@@ -394,10 +394,9 @@ class NetworkSettingInterface(BaseSettingInterface):
         WnacgCrawler._mirrors = existing
                 
         if added > 0:
-            InfoBar.success("获取成功", f"已成功添加 {added} 个最新域名到下拉列表中", parent=self.window(), position=InfoBarPosition.TOP)
-            self.domainCard.comboBox.setCurrentIndex(self.domainCard.comboBox.count() - 1)
+            InfoBar.success("📡 域名拉取成功", f"最新的防屏蔽地址已装填，新增 {added} 个域名", parent=self.window(), position=InfoBarPosition.TOP)
         else:
-            InfoBar.warning("已是最新", "发布页中的最新域名已全部存在于列表中", parent=self.window(), position=InfoBarPosition.TOP)
+            InfoBar.warning("⚡ 提示", "当前备用域名列表已经是最新，无需更新", parent=self.window(), position=InfoBarPosition.TOP)
 
 
 class DownloadSettingInterface(BaseSettingInterface):

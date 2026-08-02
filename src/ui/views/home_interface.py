@@ -503,7 +503,7 @@ class HomeInterface(QWidget):
 
     def _on_download_clicked(self, comic: Comic):
         downloader_manager.add_task(comic)
-        InfoBar.success("已加入下载队列", f"正在后台处理: {comic.title}", parent=self, position=InfoBarPosition.TOP_RIGHT)
+        InfoBar.success("已加入下载队列", f"请前往左侧『下载任务』页面查看进度: {comic.title}", parent=self, position=InfoBarPosition.TOP_RIGHT)
 
     def _show_context_menu(self, pos):
         selected_items = self.scrollWidget.get_selected_items()

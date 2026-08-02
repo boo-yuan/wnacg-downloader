@@ -140,7 +140,7 @@ class WnacgCrawler:
                 info_col = item.select_one('.info_col')
                 if info_col:
                     text = info_col.text.strip()
-                    m_pic = re.search(r'(\d+)\s*张', text)
+                    m_pic = re.search(r'(\d+)\s*[张張Pp]', text)
                     if m_pic:
                         pic_count = f"{m_pic.group(1)}图"
                     m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
@@ -202,7 +202,7 @@ class WnacgCrawler:
                     info_col = item.select_one('.info_col')
                     if info_col:
                         text = info_col.text.strip()
-                        m_pic = re.search(r'(\d+)\s*张', text)
+                        m_pic = re.search(r'(\d+)\s*[张張Pp]', text)
                         if m_pic:
                             pic_count = f"{m_pic.group(1)}图"
                         m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
