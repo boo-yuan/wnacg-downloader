@@ -116,7 +116,6 @@ class MainWindow(FluentWindow):
             self.downloadBadge.show()
         else:
             if hasattr(self, 'downloadBadge') and self.downloadBadge:
-                self.downloadBadge.hide()
                 self.downloadBadge.deleteLater()
                 self.downloadBadge = None
             
