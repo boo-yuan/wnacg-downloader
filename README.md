@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🤖 WNACG Downloader (v1.0.0)
+# 🤖 WNACG Downloader (v1.1.0)
 
 **一款专注于 WNACG 的自动化漫画下载神器**
 
