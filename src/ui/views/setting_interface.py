@@ -420,9 +420,9 @@ class DownloadSettingInterface(BaseSettingInterface):
         
         self.downloadNamingCard = ComboBoxSettingCard(
             icon=FIF.EDIT,
-            title="图像命名规则",
-            content="选择下载后的图片保存名称",
-            texts=["使用原始名称", "按顺序重命名 (001, 002)"],
+            title="图片命名规则",
+            content="选择保存图片时的文件名格式",
+            texts=["原始名称", "顺序数字 (001, 002...)"],
             parent=self.sysGroup
         )
         naming_map = {"original": 0, "sequential": 1}
@@ -461,6 +461,7 @@ class DownloadSettingInterface(BaseSettingInterface):
         )
         self.deleteOriginalCard.setChecked(cfg.delete_original_after_pack)
         self.deleteOriginalCard.checkedChanged.connect(self._on_delete_original_changed)
+        self.deleteOriginalCard.setEnabled(cfg.pack_to_zip)
 
         self.sysGroup.addSettingCard(self.packZipCard)
         self.sysGroup.addSettingCard(self.deleteOriginalCard)
@@ -527,6 +528,7 @@ class DownloadSettingInterface(BaseSettingInterface):
     def _on_pack_zip_changed(self, checked: bool):
         cfg.pack_to_zip = checked
         cfg.save()
+        self.deleteOriginalCard.setEnabled(checked)
         
     def _on_delete_original_changed(self, checked: bool):
         cfg.delete_original_after_pack = checked
@@ -592,8 +594,8 @@ class AboutSettingInterface(BaseSettingInterface):
         
         self.closeToTrayCard = MySwitchSettingCard(
             icon=FIF.MINIMIZE,
-            title="关闭窗口时最小化到系统托盘",
-            content="开启后点击关闭按钮程序将后台运行下载任务",
+            title="点击关闭按钮时，隐藏至系统托盘",
+            content="关闭此项则直接彻底退出程序 (若开启二次确认弹窗，则以弹窗选择为准)",
             parent=self.aboutGroup
         )
         self.closeToTrayCard.setChecked(cfg.close_to_tray)
@@ -601,8 +603,8 @@ class AboutSettingInterface(BaseSettingInterface):
         
         self.showClosePromptCard = MySwitchSettingCard(
             icon=FIF.CLOSE,
-            title="退出软件时需要二次确认",
-            content="开启后可防止手滑关闭软件。弹窗内可选择彻底退出或最小化到系统托盘",
+            title="关闭软件时显示二次确认弹窗",
+            content="防止误触中断正在进行的下载，可在弹窗内自由选择转入后台或彻底退出",
             parent=self.aboutGroup
         )
         self.showClosePromptCard.setChecked(cfg.show_close_prompt)
