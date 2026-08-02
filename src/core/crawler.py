@@ -241,7 +241,7 @@ class WnacgCrawler:
                     import urllib.parse
                     matches = re.search(r'var\s+imglist\s*=\s*(\[.*?\]);', html, re.DOTALL)
                     if matches:
-                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?[\'\"](.*?)[\'\"]', matches.group(1))
+                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?\\*[\'\"](.*?)\\*[\'\"]', matches.group(1))
                         return [f"https:{u}" if u.startswith('//') else urllib.parse.urljoin(base, u) for u in urls]
                     return []
                 urls = await asyncio.to_thread(parse_gallery, resp.text, base_url)
