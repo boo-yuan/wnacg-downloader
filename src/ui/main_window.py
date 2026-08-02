@@ -24,11 +24,11 @@ class ClosePromptDialog(MessageBoxBase):
         self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
         
         if active_count > 0:
-            text = f"⚠️ 注意：您当前还有 {active_count} 个任务正在下载！\n如果彻底退出，下载将会被强制中断。\n\n建议将其最小化到系统托盘并在后台运行，您要怎么做？"
+            text = f"⚠️ 注意：还有 {active_count} 个任务正在下载！\n彻底退出会中断下载。\n\n建议您选择“最小化到托盘”，让它在后台默默下载。"
             self.contentLabel = BodyLabel(text, self)
             self.contentLabel.setStyleSheet("color: #d9534f; font-weight: bold;")
         else:
-            self.contentLabel = BodyLabel("您想要彻底退出程序，还是将其最小化到系统托盘并在后台运行？", self)
+            self.contentLabel = BodyLabel("要彻底退出软件，还是隐藏到后台系统托盘？", self)
         
         self.viewLayout.addWidget(self.titleLabel)
         self.viewLayout.addWidget(self.contentLabel)
@@ -222,8 +222,7 @@ class MainWindow(FluentWindow):
                     
                     # Update settings UI if we can
                     try:
-                        self.aboutSettingInterface.closeToTrayCard.setChecked(True)
-                        self.aboutSettingInterface.showClosePromptCard.setChecked(False)
+                        self.aboutSettingInterface.closeActionCard.comboBox.setCurrentIndex(1)
                     except:
                         pass
                 
@@ -242,8 +241,7 @@ class MainWindow(FluentWindow):
                     cfg.save()
                     
                     try:
-                        self.aboutSettingInterface.closeToTrayCard.setChecked(False)
-                        self.aboutSettingInterface.showClosePromptCard.setChecked(False)
+                        self.aboutSettingInterface.closeActionCard.comboBox.setCurrentIndex(2)
                     except:
                         pass
                         

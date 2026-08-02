@@ -202,13 +202,13 @@ class NetworkSettingInterface(BaseSettingInterface):
         self._init_system_settings()
 
     def _init_proxy_settings(self):
-        self.proxyGroup = SettingCardGroup("网络与代理设置", self.scrollWidget)
+        self.proxyGroup = SettingCardGroup("网络与代理", self.scrollWidget)
         
         self.proxyModeCard = ComboBoxSettingCard(
             icon=FIF.GLOBE,
             title="代理模式",
-            content="选择软件使用的代理类型",
-            texts=["系统代理", "直连", "自定义代理"],
+            content="选择连接网络的方式",
+            texts=["跟随系统代理", "直接连接", "手动配置代理"],
             parent=self.proxyGroup
         )
         mode_map = {ProxyMode.SYSTEM: 0, ProxyMode.DIRECT: 1, ProxyMode.CUSTOM: 2}
@@ -217,8 +217,8 @@ class NetworkSettingInterface(BaseSettingInterface):
 
         self.customProxyCard = LineEditSettingCard(
             icon=FIF.LINK,
-            title="自定义代理地址",
-            content="例如: http://127.0.0.1:7890",
+            title="手动代理地址",
+            content="填写代理服务器地址（如：http://127.0.0.1:7890）",
             parent=self.proxyGroup
         )
         self.customProxyCard.lineEdit.setText(cfg.custom_proxy)
@@ -227,16 +227,16 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.testNetworkCard = PushSettingCard(
             text="开始测试",
             icon=FIF.SEND,
-            title="测试网络连通性",
-            content="测试当前代理设置能否成功连接到主域名",
+            title="测试网络连接",
+            content="检查当前网络能否顺利访问漫画网站",
             parent=self.proxyGroup
         )
         self.testNetworkCard.clicked.connect(self._test_network)
         
         self.domainCard = EditableComboBoxSettingCard(
             icon=FIF.GLOBE,
-            title="站点主域名",
-            content="常被墙可随时更换，支持下拉选择备用域名",
+            title="WNACG 主域名",
+            content="如果无法访问，请尝试切换至下拉列表中的其他域名",
             texts=cfg.backup_domains,
             parent=self.proxyGroup
         )
@@ -248,8 +248,8 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.fetchDomainCard = PushSettingCard(
             text="获取",
             icon=FIF.SYNC,
-            title="获取最新备用域名",
-            content="从发布页 (wnacg01.link) 获取最新防屏蔽域名并添加到下拉列表中",
+            title="获取最新域名",
+            content="自动拉取官方最新的防屏蔽域名，并加入到上方列表",
             parent=self.proxyGroup
         )
         self.fetchDomainCard.clicked.connect(self._fetch_latest_domains)
@@ -279,12 +279,12 @@ class NetworkSettingInterface(BaseSettingInterface):
             InfoBar.error("测试失败", msg, parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
         
     def _init_system_settings(self):
-        self.concurrentGroup = SettingCardGroup("网络与并发控制", self.scrollWidget)
+        self.concurrentGroup = SettingCardGroup("下载性能调节", self.scrollWidget)
         
         self.maxTasksCard = SpinBoxSettingCard(
             icon=FIF.CLOUD_DOWNLOAD,
-            title="最大并行任务数",
-            content="同时下载的漫画数量（建议 1-5）",
+            title="同时下载的任务数",
+            content="允许同时下载多少部漫画（推荐 1-5，避免卡顿）",
             parent=self.concurrentGroup
         )
         self.maxTasksCard.spinBox.setRange(1, 10)
@@ -293,8 +293,8 @@ class NetworkSettingInterface(BaseSettingInterface):
         
         self.globalConnectionsCard = SpinBoxSettingCard(
             icon=FIF.IOT,
-            title="全局最大并发连接数",
-            content="控制底层的最高并发网络连接数（建议 4-16）",
+            title="图片并发下载数",
+            content="所有任务加起来最多同时下载多少张图片（推荐 4-16）",
             parent=self.concurrentGroup
         )
         self.globalConnectionsCard.spinBox.setRange(1, 32)
@@ -303,8 +303,8 @@ class NetworkSettingInterface(BaseSettingInterface):
         
         self.downloadDelayCard = DoubleSpinBoxSettingCard(
             icon=FIF.HISTORY,
-            title="图片下载间隔时间",
-            content="每张图片下载完毕后的延迟时间(秒)，缓解服务器压力",
+            title="下载防封禁延迟",
+            content="每下载完一张图片后暂停几秒，防止被网站拉黑封禁",
             parent=self.concurrentGroup
         )
         self.downloadDelayCard.spinBox.setRange(0.0, 10.0)
@@ -314,8 +314,8 @@ class NetworkSettingInterface(BaseSettingInterface):
         
         self.globalSpeedLimitCard = SpinBoxSettingCard(
             icon=FIF.SPEED_OFF,
-            title="全局下载限速 (KB/s)",
-            content="设置为 0 表示不限制下载速度",
+            title="最高下载速度限制 (KB/s)",
+            content="填 0 表示完全不限速",
             parent=self.concurrentGroup
         )
         self.globalSpeedLimitCard.spinBox.setRange(0, 999999)
@@ -407,12 +407,12 @@ class DownloadSettingInterface(BaseSettingInterface):
         self._init_download_settings()
 
     def _init_download_settings(self):
-        self.sysGroup = SettingCardGroup("下载与存储设置", self.scrollWidget)
+        self.sysGroup = SettingCardGroup("下载与存储", self.scrollWidget)
         
         self.downloadDirCard = PushSettingCard(
             text="选择文件夹",
             icon=FIF.FOLDER,
-            title="下载保存目录",
+            title="保存到电脑的位置",
             content=str(Path(cfg.download_dir).absolute()),
             parent=self.sysGroup
         )
@@ -431,8 +431,8 @@ class DownloadSettingInterface(BaseSettingInterface):
 
         self.downloadFormatCard = ComboBoxSettingCard(
             icon=FIF.PHOTO,
-            title="图像保存格式",
-            content="下载后转换保存的图像格式",
+            title="强制转换图片格式",
+            content="将下载的图片统一转为指定格式（选“原始格式”则不转换）",
             texts=["原始格式", "JPG", "PNG", "WEBP"],
             parent=self.sysGroup
         )
@@ -446,8 +446,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         
         self.packZipCard = MySwitchSettingCard(
             icon=FIF.ZIP_FOLDER,
-            title="自动打包为 ZIP",
-            content="下载完成后自动将图片打包为一个 ZIP 文件",
+            title="下载后打包为 ZIP",
+            content="漫画下载完毕后，自动将其压缩成一个 ZIP 压缩包",
             parent=self.sysGroup
         )
         self.packZipCard.setChecked(cfg.pack_to_zip)
@@ -455,8 +455,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         
         self.deleteOriginalCard = MySwitchSettingCard(
             icon=FIF.DELETE,
-            title="打包后删除原文件",
-            content="打包 ZIP 完成后自动删除原始图片文件夹",
+            title="打包后清理图片文件夹",
+            content="ZIP 创建成功后，自动删除原本的散图文件夹，节省空间",
             parent=self.sysGroup
         )
         self.deleteOriginalCard.setChecked(cfg.delete_original_after_pack)
@@ -468,8 +468,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         
         self.autoStartCard = MySwitchSettingCard(
             icon=FIF.PLAY,
-            title="添加任务后立即下载",
-            content="关闭后任务将会保持为等待状态，需手动开始",
+            title="添加漫画后自动开始",
+            content="关闭此项后，新添加的漫画默认处于暂停状态，需手动点击开始",
             parent=self.sysGroup
         )
         self.autoStartCard.setChecked(cfg.auto_start_download)
@@ -479,12 +479,12 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.expandLayout.addWidget(self.sysGroup)
         
         # 行为与提示设置
-        self.promptGroup = SettingCardGroup("交互与提醒", self.scrollWidget)
+        self.promptGroup = SettingCardGroup("弹窗与提醒", self.scrollWidget)
         
         self.showCancelPromptCard = MySwitchSettingCard(
             icon=FIF.CANCEL,
-            title="取消任务时需要二次确认",
-            content="防止手滑取消下载。如果在之前的弹窗里勾选了“不再提示”，可以在这里重新恢复开启",
+            title="取消下载时二次确认",
+            content="弹出确认框防止手滑点错。若之前勾选过“不再提示”，可在此重新打开",
             parent=self.promptGroup
         )
         self.showCancelPromptCard.setChecked(cfg.show_cancel_prompt)
@@ -492,8 +492,8 @@ class DownloadSettingInterface(BaseSettingInterface):
         
         self.deleteFilesOnCancelCard = MySwitchSettingCard(
             icon=FIF.DELETE,
-            title="取消任务时连同文件一起删除",
-            content="开启后，取消任务会自动把下载到一半的残余文件夹和压缩包彻底删掉，释放C盘空间",
+            title="取消下载时清除已下载文件",
+            content="自动删除下到一半的残缺图片和文件夹，保持硬盘干净",
             parent=self.promptGroup
         )
         self.deleteFilesOnCancelCard.setChecked(cfg.delete_files_on_cancel)
@@ -551,7 +551,7 @@ class AboutSettingInterface(BaseSettingInterface):
         self._init_about_settings()
 
     def _init_about_settings(self):
-        self.aboutGroup = SettingCardGroup("关于与系统", self.scrollWidget)
+        self.aboutGroup = SettingCardGroup("系统与关于", self.scrollWidget)
         
         self.logCard = PushSettingCard(
             text="查看日志",
@@ -592,26 +592,23 @@ class AboutSettingInterface(BaseSettingInterface):
             parent=self.aboutGroup
         )
         
-        self.closeToTrayCard = MySwitchSettingCard(
-            icon=FIF.MINIMIZE,
-            title="点击关闭按钮时，隐藏至系统托盘",
-            content="关闭此项则直接彻底退出程序 (若开启二次确认弹窗，则以弹窗选择为准)",
-            parent=self.aboutGroup
-        )
-        self.closeToTrayCard.setChecked(cfg.close_to_tray)
-        self.closeToTrayCard.checkedChanged.connect(self._on_close_to_tray_changed)
-        
-        self.showClosePromptCard = MySwitchSettingCard(
+        self.closeActionCard = ComboBoxSettingCard(
             icon=FIF.CLOSE,
-            title="关闭软件时显示二次确认弹窗",
-            content="防止误触中断正在进行的下载，可在弹窗内自由选择转入后台或彻底退出",
+            title="关闭主窗口时的行为",
+            content="点击右上角关闭(X)按钮时，程序的响应方式",
+            texts=["每次询问我 (弹出二次确认)", "最小化到系统托盘 (保持后台运行)", "直接彻底退出程序"],
             parent=self.aboutGroup
         )
-        self.showClosePromptCard.setChecked(cfg.show_close_prompt)
-        self.showClosePromptCard.checkedChanged.connect(self._on_show_close_prompt_changed)
+        if cfg.show_close_prompt:
+            idx = 0
+        elif cfg.close_to_tray:
+            idx = 1
+        else:
+            idx = 2
+        self.closeActionCard.comboBox.setCurrentIndex(idx)
+        self.closeActionCard.comboBox.currentIndexChanged.connect(self._on_close_action_changed)
         
-        self.aboutGroup.addSettingCard(self.closeToTrayCard)
-        self.aboutGroup.addSettingCard(self.showClosePromptCard)
+        self.aboutGroup.addSettingCard(self.closeActionCard)
         self.aboutGroup.addSettingCard(self.logCard)
         self.aboutGroup.addSettingCard(self.helpCard)
         self.aboutGroup.addSettingCard(self.updateCard)
@@ -627,12 +624,15 @@ class AboutSettingInterface(BaseSettingInterface):
         from PySide6.QtCore import QUrl
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path)))
             
-    def _on_close_to_tray_changed(self, checked: bool):
-        cfg.close_to_tray = checked
-        cfg.save()
-        
-    def _on_show_close_prompt_changed(self, checked: bool):
-        cfg.show_close_prompt = checked
+    def _on_close_action_changed(self, index: int):
+        if index == 0:
+            cfg.show_close_prompt = True
+        elif index == 1:
+            cfg.show_close_prompt = False
+            cfg.close_to_tray = True
+        elif index == 2:
+            cfg.show_close_prompt = False
+            cfg.close_to_tray = False
         cfg.save()
 
     def _check_update(self):
