@@ -406,6 +406,30 @@ class DownloadSettingInterface(BaseSettingInterface):
         self._init_download_settings()
 
     def _init_download_settings(self):
+        self.searchGroup = SettingCardGroup("搜索过滤", self.scrollWidget)
+        
+        self.filterPrefixCard = LineEditSettingCard(
+            icon=FIF.FILTER,
+            title="过滤标题开头",
+            content="输入要过滤的漫画标题开头关键词，多个用逗号分隔（忽略大小写）",
+            parent=self.searchGroup
+        )
+        self.filterPrefixCard.lineEdit.setText(cfg.filter_title_prefix)
+        self.filterPrefixCard.lineEdit.textChanged.connect(self._on_filter_prefix_changed)
+        
+        self.filterContainsCard = LineEditSettingCard(
+            icon=FIF.FILTER,
+            title="过滤标题包含",
+            content="输入要过滤的漫画标题包含关键词，多个用逗号分隔（忽略大小写）",
+            parent=self.searchGroup
+        )
+        self.filterContainsCard.lineEdit.setText(cfg.filter_title_contains)
+        self.filterContainsCard.lineEdit.textChanged.connect(self._on_filter_contains_changed)
+        
+        self.searchGroup.addSettingCard(self.filterPrefixCard)
+        self.searchGroup.addSettingCard(self.filterContainsCard)
+        self.expandLayout.addWidget(self.searchGroup)
+
         self.sysGroup = SettingCardGroup("下载与存储", self.scrollWidget)
         
         self.downloadDirCard = PushSettingCard(
@@ -504,6 +528,14 @@ class DownloadSettingInterface(BaseSettingInterface):
 
     def _on_show_cancel_prompt_changed(self, checked: bool):
         cfg.show_cancel_prompt = checked
+        cfg.save()
+        
+    def _on_filter_prefix_changed(self, text: str):
+        cfg.filter_title_prefix = text
+        cfg.save()
+
+    def _on_filter_contains_changed(self, text: str):
+        cfg.filter_title_contains = text
         cfg.save()
         
     def _on_delete_files_on_cancel_changed(self, checked: bool):
