@@ -2,6 +2,8 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    Action,
+    CommandBar,
     FlowLayout,
     InfoBar,
     InfoBarPosition,
@@ -11,17 +13,15 @@ from qfluentwidgets import (
     SearchLineEdit,
     ThemeColor,
     ToolButton,
-    CommandBar,
-    Action,
     setFont,
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from core.crawler import WnacgCrawler
-from core.downloader import downloader_manager
-from core.models import Comic
-from ui.components.comic_card import ComicCard
-from ui.components.selectable_container import SelectableContainer
+from wnacg.application.downloader import downloader_manager
+from wnacg.domain.models import Comic
+from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.ui.components.comic_card import ComicCard
+from wnacg.ui.components.selectable_container import SelectableContainer
 
 
 class SearchWorker(QThread):
@@ -196,7 +196,7 @@ class HomeInterface(QWidget):
             aid_to_update = args[0].comic.aid
         elif len(args) >= 1 and isinstance(args[0], str):
             task_id = args[0]
-            import core.db as db
+            from wnacg.infrastructure import database as db
             task = db.get_task(task_id)
             if task and task.comic:
                 aid_to_update = task.comic.aid
@@ -232,6 +232,7 @@ class HomeInterface(QWidget):
         emptyLayout.setSpacing(12)
         
         import os
+
         from PySide6.QtGui import QPixmap
         from qfluentwidgets import SubtitleLabel, TitleLabel
         

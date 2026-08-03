@@ -1,6 +1,6 @@
 from curl_cffi.requests import AsyncSession
 
-from core.logger import logger
+from wnacg.infrastructure.logger import logger
 
 
 class Updater:
@@ -16,7 +16,7 @@ class Updater:
         """
         Returns a dict: {"has_update": bool, "latest_version": str, "release_notes": str, "download_url": str}
         """
-        from core.config import cfg
+        from wnacg.infrastructure.config import cfg
         kwargs = {
             "impersonate": "chrome",
             "verify": False,

@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-from core.paths import DATA_DIR
+from wnacg.infrastructure.paths import DATA_DIR
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
@@ -55,13 +55,13 @@ def load_config() -> AppConfig:
             with open(CONFIG_FILE, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            from core.logger import logger
+            from wnacg.infrastructure.logger import logger
             logger.error(f"Failed to parse config.json, using defaults: {e}")
             
     try:
         c = AppConfig(**data)
     except Exception as e:
-        from core.logger import logger
+        from wnacg.infrastructure.logger import logger
         logger.error(f"Config validation error, resetting invalid fields: {e}")
         c = AppConfig()
         

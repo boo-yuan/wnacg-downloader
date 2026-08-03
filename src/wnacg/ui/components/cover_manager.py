@@ -2,15 +2,14 @@ import atexit
 import hashlib
 import os
 import shutil
+from pathlib import Path
 
 from curl_cffi import requests
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
-from core.config import cfg
-from core.logger import logger
-
-from pathlib import Path
+from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.logger import logger
 
 _temp_dirs = set()
 

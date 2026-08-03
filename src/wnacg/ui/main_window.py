@@ -13,8 +13,8 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from core.config import cfg
-from core.downloader import downloader_manager
+from wnacg.application.downloader import downloader_manager
+from wnacg.infrastructure.config import cfg
 
 
 class ClosePromptDialog(MessageBoxBase):
@@ -40,9 +40,13 @@ class ClosePromptDialog(MessageBoxBase):
         self.yesButton.setText("最小化到托盘")
         self.cancelButton.setText("彻底退出")
 
-from ui.views.download_interface import DownloadInterface
-from ui.views.home_interface import HomeInterface
-from ui.views.setting_interface import AboutSettingInterface, DownloadSettingInterface, NetworkSettingInterface
+from wnacg.ui.views.download_interface import DownloadInterface
+from wnacg.ui.views.home_interface import HomeInterface
+from wnacg.ui.views.setting_interface import (
+    AboutSettingInterface,
+    DownloadSettingInterface,
+    NetworkSettingInterface,
+)
 
 
 class MainWindow(FluentWindow):
@@ -159,15 +163,15 @@ class MainWindow(FluentWindow):
         downloader_manager.signals.task_status_changed.connect(self._on_task_status_for_tray)
         
     def _on_task_status_for_tray(self, task_id, status):
-        from core.models import TaskStatus
-        import core.db as db
+        from wnacg.domain.models import TaskStatus
+        from wnacg.infrastructure import database as db
         if status == TaskStatus.COMPLETED:
             tasks = db.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
             
             if active_count == 0:
-                from qfluentwidgets import InfoBar, InfoBarPosition
                 from PySide6.QtCore import Qt
+                from qfluentwidgets import InfoBar, InfoBarPosition
                 InfoBar.success(
                     title="🎉 下载大满贯！",
                     content="队列里的漫画全都下完啦，快去欣赏吧。",
@@ -212,8 +216,8 @@ class MainWindow(FluentWindow):
         
     def closeEvent(self, e: QCloseEvent):
         if cfg.show_close_prompt:
-            import core.db as db
-            from core.models import TaskStatus
+            from wnacg.domain.models import TaskStatus
+            from wnacg.infrastructure import database as db
             tasks = db.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
             

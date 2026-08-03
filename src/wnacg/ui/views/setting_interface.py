@@ -12,6 +12,8 @@ from qfluentwidgets import (
     DoubleSpinBox,
     EditableComboBox,
     ExpandLayout,
+    InfoBar,
+    InfoBarPosition,
     LineEdit,
     PrimaryPushSettingCard,
     PushSettingCard,
@@ -21,13 +23,11 @@ from qfluentwidgets import (
     SpinBox,
     SwitchButton,
     setFont,
-    InfoBar,
-    InfoBarPosition,
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from core.config import ProxyMode, cfg
-from core.updater import Updater
+from wnacg.infrastructure.config import ProxyMode, cfg
+from wnacg.infrastructure.updater import Updater
 
 
 class LineEditSettingCard(SettingCard):
@@ -156,6 +156,7 @@ class NetworkTestWorker(QThread):
     def run(self):
         try:
             import time
+
             from curl_cffi.requests import Session
             
             kwargs = {
@@ -359,7 +360,7 @@ class NetworkSettingInterface(BaseSettingInterface):
         cfg.domain = text
         cfg.save()
         
-        from core.crawler import WnacgCrawler
+        from wnacg.infrastructure.crawler import WnacgCrawler
         WnacgCrawler._active_domain = None
         
     def _fetch_latest_domains(self):
@@ -390,7 +391,7 @@ class NetworkSettingInterface(BaseSettingInterface):
             cfg.backup_domains = existing
             cfg.save()
             
-        from core.crawler import WnacgCrawler
+        from wnacg.infrastructure.crawler import WnacgCrawler
         WnacgCrawler._mirrors = existing
                 
         if added > 0:
@@ -619,8 +620,8 @@ class AboutSettingInterface(BaseSettingInterface):
         if not log_path.exists():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write("暂无日志记录\n")
-        from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_path)))
             
     def _on_close_action_changed(self, index: int):

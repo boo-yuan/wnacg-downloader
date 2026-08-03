@@ -1,19 +1,19 @@
 import asyncio
 import os
 import random
+import threading
 import time
 import uuid
-import threading
 from pathlib import Path
 
 import PIL.Image
 from PySide6.QtCore import QObject, QThread, Signal
 
-import core.db as db
-from core.config import cfg
-from core.crawler import WnacgCrawler
-from core.logger import logger
-from core.models import Comic, DownloadTask, TaskStatus
+from wnacg.domain.models import Comic, DownloadTask, TaskStatus
+from wnacg.infrastructure import database as db
+from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.logger import logger
 
 
 class SpeedMonitor:
@@ -226,9 +226,10 @@ class DownloaderWorker(QThread):
                             self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
                     if delete_files and cfg.delete_files_on_cancel:
                         try:
-                            import shutil
                             import os
-                            from core.config import cfg as config
+                            import shutil
+
+                            from wnacg.infrastructure.config import cfg as config
                             
                             folder_name = self._clean_filename(task.comic.title, task.comic.aid)
                             path = os.path.join(config.download_dir, folder_name)

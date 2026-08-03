@@ -2,9 +2,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QContextMenuEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    Action,
     BodyLabel,
     CardWidget,
     CheckBox,
+    CommandBar,
+    InfoBar,
+    InfoBarPosition,
     MessageBoxBase,
     PrimaryPushButton,
     ProgressBar,
@@ -13,18 +17,14 @@ from qfluentwidgets import (
     SubtitleLabel,
     TitleLabel,
     ToolButton,
-    CommandBar,
-    Action,
-    InfoBar,
-    InfoBarPosition,
 )
 from qfluentwidgets import FluentIcon as FIF
 
-import core.db as db
-from core.config import cfg
-from core.downloader import downloader_manager
-from core.models import DownloadTask, TaskStatus
-from ui.components.selectable_container import SelectableContainer
+from wnacg.application.downloader import downloader_manager
+from wnacg.domain.models import DownloadTask, TaskStatus
+from wnacg.infrastructure import database as db
+from wnacg.infrastructure.config import cfg
+from wnacg.ui.components.selectable_container import SelectableContainer
 
 
 class CancelPromptDialog(MessageBoxBase):

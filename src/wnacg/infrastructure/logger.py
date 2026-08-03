@@ -1,7 +1,8 @@
 import sys
 
 from loguru import logger
-from core.paths import DATA_DIR
+
+from wnacg.infrastructure.paths import DATA_DIR
 
 # 清除默认的所有 handler
 logger.remove()
@@ -27,6 +28,7 @@ __all__ = ["logger"]
 
 import traceback
 
+
 # 捕获全局未处理异常
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -39,6 +41,7 @@ sys.excepthook = handle_exception
 
 # 捕获子线程中的未处理异常
 import threading
+
 
 def handle_thread_exception(args):
     err_msg = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))

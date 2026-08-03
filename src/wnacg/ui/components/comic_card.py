@@ -3,9 +3,9 @@ from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
 from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, ThemeColor
 
-import core.db as db
-from core.models import Comic, TaskStatus
-from ui.components.cover_manager import cover_manager
+from wnacg.domain.models import Comic, TaskStatus
+from wnacg.infrastructure import database as db
+from wnacg.ui.components.cover_manager import cover_manager
 
 
 class ComicCard(ElevatedCardWidget):
@@ -95,7 +95,7 @@ class ComicCard(ElevatedCardWidget):
     def _get_save_path(self):
         from pathlib import Path
 
-        from core.config import cfg
+        from wnacg.infrastructure.config import cfg
         name = self.comic.title
         invalid_chars = '<>:"/\\|?*'
         for c in invalid_chars:

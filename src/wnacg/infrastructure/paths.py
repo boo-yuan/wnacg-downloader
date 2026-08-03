@@ -3,16 +3,33 @@ import shutil
 import sys
 from pathlib import Path
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class DataDirectorySettings(BaseSettings):
+    """Environment-backed override used by packaging and isolated smoke tests."""
+
+    model_config = SettingsConfigDict(env_prefix="WNACG_", extra="ignore")
+
+    data_dir: Path | None = None
+
+
 def get_data_dir() -> Path:
+    settings = DataDirectorySettings()
+    if settings.data_dir is not None:
+        data_dir = settings.data_dir.expanduser().resolve()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
     # 按照系统规范，数据默认保存在系统应用数据目录
-    if os.name == 'nt':
+    if os.name == "nt":
         appdata_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
         data_dir = Path(appdata_base) / "wnacg-downloader"
     else:
         data_dir = Path(os.path.expanduser("~")) / ".wnacg-downloader"
-        
+
     data_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 尝试恢复刚才可能被备份的 AppData 数据 (被改名为 _bak 的目录)
     bak_appdata = Path(str(data_dir) + "_bak")
     if bak_appdata.exists() and bak_appdata.is_dir():
@@ -30,11 +47,12 @@ def get_data_dir() -> Path:
             pass
 
     # 如果有在本地目录（便携模式）产生的数据，也无缝迁移回系统目录
-    if getattr(sys, 'frozen', False):
-        local_base = Path(sys.executable).parent
-    else:
-        local_base = Path(__file__).parent.parent.parent
-        
+    local_base = (
+        Path(sys.executable).parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).parent.parent.parent
+    )
+
     local_data = local_base / "data"
     if local_data.exists() and local_data.is_dir():
         try:
@@ -52,7 +70,7 @@ def get_data_dir() -> Path:
             local_data.rename(local_bak)
         except Exception:
             pass
-            
+
     # 兼容老版本在根目录的 app.log
     old_log = local_base / "app.log"
     if old_log.exists() and old_log.is_file():
@@ -65,5 +83,6 @@ def get_data_dir() -> Path:
             pass
 
     return data_dir
+
 
 DATA_DIR = get_data_dir()

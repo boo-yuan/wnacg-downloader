@@ -1,48 +1,25 @@
 @echo off
+setlocal
 chcp 65001 >nul
 
-echo [WNACG Downloader] 正在检查基本环境...
-
-if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%"
-if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
-
+echo [WNACG Downloader] 正在检查运行环境...
 where uv >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo [WNACG Downloader] 未检测到 uv 环境，正在自动下载安装（仅限用户目录，无系统污染）...
-    powershell -NoProfile -ExecutionPolicy ByPass -Command "irm https://astral.sh/uv/install.ps1 | iex"
-)
-
-if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%"
-if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
-
-where uv >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo [错误] 无法定位或自动安装 uv 命令！
-    echo 提示：请检查您的网络连接、系统代理配置，或开启科学上网/全局代理后重启终端重试。
-    echo.
-    pause
+if errorlevel 1 (
+    echo [错误] 未找到 uv。请先从 https://docs.astral.sh/uv/ 安装 uv。
     exit /b 1
 )
 
-echo [WNACG Downloader] 正在检查并同步本地隔离环境与依赖库 (零系统污染)...
-uv sync
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo [错误] 依赖库检查或自动同步失败！
-    echo 提示：请检查您的网络连接、系统代理配置，或开启科学上网/全局代理后重试。
-    echo.
-    pause
+echo [WNACG Downloader] 正在按锁文件同步依赖...
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" sync --locked
+if errorlevel 1 (
+    echo [错误] 依赖同步失败，请检查网络和代理配置。
     exit /b 1
 )
 
 echo [WNACG Downloader] 正在启动应用程序...
-set PYTHONPATH=%cd%\src
-uv run python src/main.py
-if %ERRORLEVEL% neq 0 (
-    echo.
-    echo [错误] 应用程序发生异常并退出。
-    pause
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked wnacg-downloader %*
+if errorlevel 1 (
+    echo [错误] 应用程序异常退出。
     exit /b 1
 )
 

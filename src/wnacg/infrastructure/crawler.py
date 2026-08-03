@@ -6,9 +6,9 @@ import urllib.parse
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession, Session
 
-from core.config import cfg
-from core.logger import logger
-from core.models import Comic
+from wnacg.domain.models import Comic
+from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.logger import logger
 
 
 class WnacgCrawler:

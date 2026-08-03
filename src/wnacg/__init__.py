@@ -1,0 +1,1 @@
+"""WNACG Downloader application package."""
