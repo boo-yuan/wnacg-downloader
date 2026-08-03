@@ -2,7 +2,7 @@
 
 基于 PySide6 的 Windows 桌面画廊下载管理器。程序支持搜索与画廊 URL 解析、可恢复任务、批量控制、代理、全局并发与限速、图片格式转换，以及经过校验的原子 ZIP 打包。
 
-当前待发布版本：`1.2.0`（最新已发布版本：`1.1.0`）
+当前最新版本：`1.2.0`
 
 运行环境：Python 3.12 或 3.13（预编译 EXE 不需要安装 Python）
 
@@ -87,7 +87,7 @@ uv run --locked python -m wnacg --smoke-test
 uv audit --locked --no-dev
 ```
 
-当前门禁覆盖整个 `wnacg` 包（包括入口和 Qt UI），要求分支覆盖率不低于 55%。当前回归集为 75 项测试，最近一次全包分支覆盖率约 57%。CI 在 Python 3.12 和 3.13 上执行 Ruff、严格 Pyright、pytest 与源码烟雾测试，并单独完成 PyInstaller 构建、EXE 烟雾测试、依赖审计和 CycloneDX SBOM 导出验证。
+当前门禁覆盖整个 `wnacg` 包（包括入口和 Qt UI），要求分支覆盖率不低于 55%。当前回归集为 75 项测试，最近一次全包分支覆盖率约 57%。CI 在 Python 3.12 和 3.13 上执行 Ruff、严格 Pyright、pytest 与源码烟雾测试，并单独执行依赖审计和 CycloneDX SBOM 导出验证。CI 不构建或发布 EXE。
 
 本地构建：
 
@@ -96,6 +96,14 @@ uv audit --locked --no-dev
 ```
 
 成功后生成 `dist\WNACG-Downloader.exe`。
+
+EXE 只在本地手动构建。发布前应运行生成程序的烟雾测试并计算 SHA-256：
+
+```powershell
+$process = Start-Process -FilePath .\dist\WNACG-Downloader.exe -ArgumentList --smoke-test -Wait -PassThru
+if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+Get-FileHash -Algorithm SHA256 .\dist\WNACG-Downloader.exe
+```
 
 ## 架构边界
 
@@ -108,7 +116,7 @@ uv audit --locked --no-dev
 
 ## 版本记录
 
-### v1.2.0（待发布）
+### v1.2.0
 
 本版本在 `v1.1.0` 基础上完成多轮深度审查，重点提升恢复能力、并发一致性、网络与文件安全，以及发布流程的可验证性。
 
@@ -126,7 +134,7 @@ uv audit --locked --no-dev
 - 下载器、封面管理器和 UI worker 使用统一退出期限，事件循环关闭前排空异步任务和线程执行器。
 - UI 使用 generation token 丢弃过期搜索与卡片结果，删除操作按后端实际结果更新界面。
 - 重构为 `domain`、`application`、`infrastructure`、`ui` 分层，并从入口显式注入仓储与下载服务。
-- 建立 Ruff、严格 Pyright、75 项 pytest 回归测试、全包分支覆盖率门槛、源码/EXE 烟雾测试、依赖审计和 SBOM 验证。
+- 建立 Ruff、严格 Pyright、75 项 pytest 回归测试、全包分支覆盖率门槛、源码烟雾测试、依赖审计和 SBOM 验证；EXE 构建与烟雾测试由发布者在本地执行。
 
 ### v1.1.0
 

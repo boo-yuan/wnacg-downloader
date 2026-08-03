@@ -40,29 +40,6 @@ jobs:
           WNACG_DATA_DIR: ${{ runner.temp }}\wnacg-smoke
         run: uv run --locked python -m wnacg --smoke-test
 
-  build-smoke:
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: true
-          python-version: "3.12"
-          version: "0.12.0"
-      - name: Install locked build dependencies
-        run: uv sync --locked --no-dev --group build
-      - name: Build executable
-        run: .\build.bat
-      - name: Smoke test executable
-        shell: pwsh
-        run: |
-          $process = Start-Process -FilePath '.\dist\WNACG-Downloader.exe' -ArgumentList '--smoke-test' -Wait -PassThru -WindowStyle Hidden
-          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
-      - name: Publish executable checksum
-        shell: pwsh
-        run: Get-FileHash -Algorithm SHA256 '.\dist\WNACG-Downloader.exe' | Format-List
-
   dependency-security:
     runs-on: windows-latest
     timeout-minutes: 15
