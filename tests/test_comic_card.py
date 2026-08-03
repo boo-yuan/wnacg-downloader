@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 
 from wnacg.application.file_paths import archive_path
@@ -89,29 +88,25 @@ def test_card_buttons_expose_each_download_state() -> None:
         application = QApplication([])
     assert isinstance(application, QApplication)
 
-    pool = QThreadPool()
     card = ComicCard(
         _comic(),
         cast(TaskRepository, _EmptyRepository()),
         cast(CoverManagerClass, object()),
-        pool,
     )
-    generation = card._state_generation
 
-    card._apply_download_state(generation, ComicCardState.QUEUED.value)
+    card.apply_download_state(ComicCardState.QUEUED.value)
     assert card.downloadBtn.text() == "已添加到队列"
     assert not card.downloadBtn.isEnabled()
 
-    card._apply_download_state(generation, ComicCardState.DOWNLOADED.value)
+    card.apply_download_state(ComicCardState.DOWNLOADED.value)
     assert card.openBtn.text() == "已下载 · 打开文件"
     assert not card.openBtn.isHidden()
     assert not card.can_queue_download
 
-    card._apply_download_state(generation, ComicCardState.MISSING.value)
+    card.apply_download_state(ComicCardState.MISSING.value)
     assert card.downloadBtn.text() == "文件已删除 · 重新下载"
     assert card.can_queue_download
 
-    pool.waitForDone()
     card.close()
     card.deleteLater()
     application.processEvents()

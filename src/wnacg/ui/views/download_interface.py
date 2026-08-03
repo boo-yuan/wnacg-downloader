@@ -323,11 +323,17 @@ class DownloadInterface(QWidget):
 
         self._load_existing_tasks()
 
-        downloader.signals.task_added.connect(self._on_task_added)
-        downloader.signals.task_progress.connect(self._on_task_progress)
-        downloader.signals.task_status_changed.connect(self._on_task_status_changed)
-        downloader.signals.task_error.connect(self._on_task_error)
-        downloader.signals.task_deletion_result.connect(self._on_task_deletion_result)
+        downloader.signals.task_added.connect(self._on_task_added, Qt.ConnectionType.QueuedConnection)
+        downloader.signals.task_progress.connect(self._on_task_progress, Qt.ConnectionType.QueuedConnection)
+        downloader.signals.task_status_changed.connect(
+            self._on_task_status_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        downloader.signals.task_error.connect(self._on_task_error, Qt.ConnectionType.QueuedConnection)
+        downloader.signals.task_deletion_result.connect(
+            self._on_task_deletion_result,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
         self._update_empty_state()
 

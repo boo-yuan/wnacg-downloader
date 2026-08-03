@@ -5,7 +5,7 @@ import re
 from enum import StrEnum
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, ThemeColor
@@ -68,28 +68,6 @@ def resolve_comic_card_state(comic: Comic, task: DownloadTask | None, fallback_p
     return ComicCardState.AVAILABLE
 
 
-class _StateSignals(QObject):
-    finished = Signal(int, str)
-
-
-class _StateWorker(QRunnable):
-    """Bounded-pool task-state lookup used by gallery cards."""
-
-    def __init__(self, comic: Comic, generation: int, repository: TaskRepository) -> None:
-        super().__init__()
-        self.comic = comic
-        self.generation = generation
-        self._repository = repository
-        self.signals = _StateSignals()
-
-    @Slot()
-    def run(self) -> None:
-        task = self._repository.get_task_by_aid(self.comic.aid)
-        fallback_path = task_directory(Path(cfg.download_dir), self.comic.title)
-        state = resolve_comic_card_state(self.comic, task, fallback_path)
-        self.signals.finished.emit(self.generation, state.value)
-
-
 class ComicCard(ElevatedCardWidget):
     downloadClicked = Signal(Comic)
 
@@ -98,14 +76,12 @@ class ComicCard(ElevatedCardWidget):
         comic: Comic,
         repository: TaskRepository,
         cover_manager: CoverManagerClass,
-        state_pool: QThreadPool,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.comic = comic
         self._repository = repository
         self._cover_manager = cover_manager
-        self._state_pool = state_pool
         self.setFixedWidth(220)
 
         self.vbox = QVBoxLayout(self)
@@ -114,7 +90,6 @@ class ComicCard(ElevatedCardWidget):
         self.vbox.setContentsMargins(12, 12, 12, 12)
 
         self._is_selected = False
-        self._state_generation = 0
         self._download_state = ComicCardState.CHECKING
 
         # 封面图
@@ -169,9 +144,6 @@ class ComicCard(ElevatedCardWidget):
         total_h = 12 + 250 + 6 + title_h + 6 + 20 + 6 + 32 + 12
         self.setFixedHeight(total_h)
 
-        self._state_updated.connect(self._apply_download_state)
-        self.update_download_state()
-
         self.loader = None
         if self.comic.cover_url:
             self._load_cover()
@@ -188,17 +160,9 @@ class ComicCard(ElevatedCardWidget):
         except RuntimeError:
             return
 
-    _state_updated = Signal(int, str)
-
-    def update_download_state(self) -> None:
-        self._state_generation += 1
-        worker = _StateWorker(self.comic, self._state_generation, self._repository)
-        worker.signals.finished.connect(self._state_updated.emit)
-        self._state_pool.start(worker)
-
-    def _apply_download_state(self, generation: int, state: str) -> None:
-        if generation != self._state_generation:
-            return
+    @Slot(str)
+    def apply_download_state(self, state: str) -> None:
+        """Apply a coordinator snapshot; this method must run on the GUI thread."""
         try:
             resolved_state = ComicCardState(state)
         except ValueError:
@@ -247,8 +211,7 @@ class ComicCard(ElevatedCardWidget):
 
     def mark_queued(self) -> None:
         """Apply an optimistic queued state while persistence catches up."""
-        self._state_generation += 1
-        self._apply_download_state(self._state_generation, ComicCardState.QUEUED.value)
+        self.apply_download_state(ComicCardState.QUEUED.value)
 
     def _on_open_clicked(self) -> None:
         task = self._repository.get_task_by_aid(self.comic.aid)

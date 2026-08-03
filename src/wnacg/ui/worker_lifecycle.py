@@ -3,6 +3,7 @@
 import time
 
 from PySide6.QtCore import QThread
+from shiboken6 import isValid
 
 from wnacg.infrastructure.logger import logger
 
@@ -18,6 +19,8 @@ def stop_qthread(
     if worker is None:
         return True
     try:
+        if not isValid(worker):
+            return True
         worker.requestInterruption()
         if not worker.isRunning():
             return True
@@ -29,6 +32,6 @@ def stop_qthread(
             worker.wait()
             return True
         return False
-    except RuntimeError:
+    except (RuntimeError, TypeError):
         logger.debug("Qt worker C++ object was already deleted", worker=name)
         return True

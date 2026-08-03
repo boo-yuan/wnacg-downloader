@@ -1,15 +1,19 @@
 """Regression tests for bounded cover-worker lifecycle behavior."""
 
+import gc
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent, QObject
 from PySide6.QtGui import QImage
+from shiboken6 import isValid
 
 from wnacg.ui.components import cover_manager
-from wnacg.ui.components.cover_manager import CoverFetchTask, CoverManagerSignals
+from wnacg.ui.components.cover_manager import CoverFetchTask, CoverManagerSignals, _CoverCallbackRef
 
 
 def test_invalid_cover_url_always_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,3 +51,34 @@ def test_cover_cache_enforces_total_size(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     assert not oldest.exists()
     assert newest.exists()
+
+
+class _CoverTarget(QObject):
+    def receive(self, _url: str, _image: QImage) -> None:
+        raise AssertionError("A deleted cover target must not be called")
+
+
+def test_bound_cover_callback_does_not_keep_target_alive() -> None:
+    target = _CoverTarget()
+    target_weakref = weakref.ref(target)
+    callback = _CoverCallbackRef(target.receive)
+
+    del target
+    gc.collect()
+
+    assert target_weakref() is None
+    assert not callback.invoke("https://example.com/cover.jpg", QImage())
+
+
+def test_cover_callback_skips_deleted_cpp_object() -> None:
+    application = QCoreApplication.instance()
+    if application is None:
+        application = QCoreApplication([])
+    target = _CoverTarget()
+    callback = _CoverCallbackRef(target.receive)
+
+    target.deleteLater()
+    QCoreApplication.sendPostedEvents(target, QEvent.Type.DeferredDelete)
+
+    assert not isValid(target)
+    assert not callback.invoke("https://example.com/cover.jpg", QImage())

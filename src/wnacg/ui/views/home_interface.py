@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -26,6 +26,7 @@ from wnacg.application.downloader import DownloaderWorker
 from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import Comic, DownloadTask
 from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.ui.card_state_coordinator import CardStateCoordinator
 from wnacg.ui.components.comic_card import ComicCard
 from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
@@ -77,8 +78,11 @@ class HomeInterface(QWidget):
         self._downloader = downloader
         self._repository = repository
         self._cover_manager = cover_manager
-        self._state_pool = QThreadPool(self)
-        self._state_pool.setMaxThreadCount(4)
+        self._state_coordinator = CardStateCoordinator(repository, self)
+        self._state_coordinator.signals.finished.connect(
+            self._apply_card_states,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.setObjectName("HomeInterface")
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
@@ -186,14 +190,20 @@ class HomeInterface(QWidget):
         self.shortcut_select_all.activated.connect(self.scrollWidget.select_all)
 
         self.contentLayout.addWidget(self.scrollArea)
-        downloader.signals.task_added.connect(self._on_task_state_changed)
-        downloader.signals.task_status_changed.connect(self._on_task_state_changed)
-        downloader.signals.task_deletion_result.connect(self._on_task_deletion_result)
+        downloader.signals.task_added.connect(self._on_task_state_changed, Qt.ConnectionType.QueuedConnection)
+        downloader.signals.task_status_changed.connect(
+            self._on_task_state_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        downloader.signals.task_deletion_result.connect(
+            self._on_task_deletion_result,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._init_bottom_layout()
 
         self._state_refresh_timer = QTimer(self)
         self._state_refresh_timer.setInterval(4_000)
-        self._state_refresh_timer.timeout.connect(self._refresh_card_states)
+        self._state_refresh_timer.timeout.connect(self.refresh_card_states)
         self._state_refresh_timer.start()
 
         # 返回顶部悬浮按钮
@@ -239,21 +249,29 @@ class HomeInterface(QWidget):
             if task and task.comic:
                 aid_to_update = task.comic.aid
 
-        if aid_to_update and aid_to_update in self.card_map:
-            self.card_map[aid_to_update].update_download_state()
-        elif not aid_to_update:
-            self._refresh_card_states(force=True)
+        if aid_to_update is None or aid_to_update in self.card_map:
+            self.refresh_card_states(force=True)
 
     def _on_task_deletion_result(self, _task_id: str, succeeded: bool, _error: str) -> None:
         if succeeded:
-            self._refresh_card_states(force=True)
+            self.refresh_card_states(force=True)
 
-    def _refresh_card_states(self, *, force: bool = False) -> None:
+    def refresh_card_states(self, *, force: bool = False) -> None:
         """Reconcile visible buttons with persisted state and local artifacts."""
         if not force and (not self.isVisible() or not self.scrollArea.isVisible()):
             return
-        for card in tuple(self.card_map.values()):
-            card.update_download_state()
+        self._state_coordinator.request(tuple(card.comic for card in self.card_map.values()))
+
+    @Slot(int, object)
+    def _apply_card_states(self, generation: int, raw_states: object) -> None:
+        if generation != self._state_coordinator.generation or not isinstance(raw_states, dict):
+            return
+        for aid, state in raw_states.items():
+            if not isinstance(aid, str) or not isinstance(state, str):
+                continue
+            card = self.card_map.get(aid)
+            if card is not None:
+                card.apply_download_state(state)
 
     def _init_bottom_layout(self) -> None:
         self._init_empty_state()
@@ -404,10 +422,10 @@ class HomeInterface(QWidget):
 
         delay = random.uniform(1.0, 2.5)
         w = SearchWorker(self.current_keyword, page, delay)
-        w.result_signal.connect(self._on_preload_result)
-        w.error_signal.connect(self._on_preload_error)
-        w.finished.connect(w.deleteLater)
-        w.finished.connect(lambda k=cache_key: self.workers.pop(k, None))
+        w.result_signal.connect(self._on_preload_result, Qt.ConnectionType.QueuedConnection)
+        w.error_signal.connect(self._on_preload_error, Qt.ConnectionType.QueuedConnection)
+        w.finished.connect(self._on_search_worker_finished, Qt.ConnectionType.QueuedConnection)
+        w.finished.connect(w.deleteLater, Qt.ConnectionType.QueuedConnection)
         self.workers[cache_key] = w
         w.start()
 
@@ -464,14 +482,7 @@ class HomeInterface(QWidget):
         self.searchBar.setEnabled(False)
         self.bottomWidget.setEnabled(False)
 
-        while self.flowLayout.count():
-            item = self.flowLayout.takeAt(0)
-            if item is None:
-                continue
-            widget = item
-            if widget:
-                widget.deleteLater()
-        self.card_map.clear()
+        self._clear_cards()
 
         self.scrollArea.hide()
         self.emptyWidget.hide()
@@ -487,8 +498,8 @@ class HomeInterface(QWidget):
             w = self.workers[cache_key]
             w.result_signal.disconnect()
             w.error_signal.disconnect()
-            w.result_signal.connect(self._on_search_result)
-            w.error_signal.connect(self._on_search_error)
+            w.result_signal.connect(self._on_search_result, Qt.ConnectionType.QueuedConnection)
+            w.error_signal.connect(self._on_search_error, Qt.ConnectionType.QueuedConnection)
             if cache_key in self._preloading_pages:
                 self._preloading_pages.remove(cache_key)
         else:
@@ -499,15 +510,34 @@ class HomeInterface(QWidget):
                 self._old_workers.append(self.worker)
 
             self.worker = SearchWorker(self.current_keyword, self.current_page)
-            self.worker.result_signal.connect(self._on_search_result)
-            self.worker.error_signal.connect(self._on_search_error)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.worker.finished.connect(lambda w=self.worker: self._cleanup_old_worker(w))
+            self.worker.result_signal.connect(self._on_search_result, Qt.ConnectionType.QueuedConnection)
+            self.worker.error_signal.connect(self._on_search_error, Qt.ConnectionType.QueuedConnection)
+            self.worker.finished.connect(self._on_search_worker_finished, Qt.ConnectionType.QueuedConnection)
+            self.worker.finished.connect(self.worker.deleteLater, Qt.ConnectionType.QueuedConnection)
             self.worker.start()
 
-    def _cleanup_old_worker(self, w: SearchWorker) -> None:
-        if w in self._old_workers:
-            self._old_workers.remove(w)
+    def _clear_cards(self) -> None:
+        """Invalidate snapshots before scheduling every card for deferred deletion."""
+        self._state_coordinator.invalidate()
+        while self.flowLayout.count():
+            item = self.flowLayout.takeAt(0)
+            if item is None:
+                continue
+            widget = item
+            if widget:
+                widget.deleteLater()
+        self.card_map.clear()
+
+    @Slot()
+    def _on_search_worker_finished(self) -> None:
+        worker = self.sender()
+        if not isinstance(worker, SearchWorker):
+            return
+        if worker in self._old_workers:
+            self._old_workers.remove(worker)
+        cache_key = (worker.keyword, worker.page)
+        if self.workers.get(cache_key) is worker:
+            self.workers.pop(cache_key, None)
 
     def _on_search_result(self, keyword: str, results: list[Comic], total_pages: int, page: int) -> None:
         if keyword != self.current_keyword or page != self.current_page:
@@ -543,12 +573,12 @@ class HomeInterface(QWidget):
                 comic,
                 self._repository,
                 self._cover_manager,
-                self._state_pool,
                 self.scrollWidget,
             )
             card.downloadClicked.connect(self._on_download_clicked)
             self.flowLayout.addWidget(card)
             self.card_map[comic.aid] = card
+        self.refresh_card_states(force=True)
 
     def _on_search_error(self, keyword: str, err_msg: str, page: int) -> None:
         if keyword != self.current_keyword or page != self.current_page:
@@ -562,19 +592,16 @@ class HomeInterface(QWidget):
 
     def stop_workers(self, deadline: float | None = None) -> None:
         """Request interruption and join all search threads during application shutdown."""
+        shutdown_deadline = deadline or (time.monotonic() + 16.0)
         self._state_refresh_timer.stop()
+        self._state_coordinator.stop(shutdown_deadline)
         candidates = [self.worker, *self.workers.values(), *self._old_workers]
         workers = list(dict.fromkeys(worker for worker in candidates if worker is not None))
-        shutdown_deadline = deadline or (time.monotonic() + 16.0)
         for index, worker in enumerate(workers):
             stop_qthread(worker, shutdown_deadline, name=f"search_worker_{index}", join_after_timeout=True)
         self.worker = None
         self.workers.clear()
         self._old_workers.clear()
-        self._state_pool.clear()
-        remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
-        if not self._state_pool.waitForDone(remaining_milliseconds):
-            self._state_pool.waitForDone()
 
     def _on_download_clicked(self, comic: Comic) -> None:
         self._downloader.add_task(comic)

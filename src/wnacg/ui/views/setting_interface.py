@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal, SignalInstance
+from PySide6.QtCore import Qt, QThread, QUrl, Signal, SignalInstance, Slot
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import QFileDialog, QWidget
 from qfluentwidgets import (
@@ -207,16 +207,17 @@ class BaseSettingInterface(ScrollArea):
         self.setWidgetResizable(True)
         self.setStyleSheet("QScrollArea, .QScrollArea > QWidget > QWidget { background: transparent; }")
 
-    def _retire_worker(self, attribute: str, worker: QThread) -> None:
+    def _retire_worker(self, attribute: str) -> None:
         """Clear a finished worker reference before Qt deletes its C++ object."""
-        if getattr(self, attribute, None) is worker:
-            setattr(self, attribute, None)
+        setattr(self, attribute, None)
 
 
 class NetworkSettingInterface(BaseSettingInterface):
     def __init__(self, apply_runtime_limits: Callable[[], None], parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self._apply_runtime_limits = apply_runtime_limits
+        self.test_worker: NetworkTestWorker | None = None
+        self.fetch_worker: DomainFetchWorker | None = None
         self.setObjectName("NetworkSettingInterface")
         self._init_proxy_settings()
         self._init_system_settings()
@@ -290,10 +291,14 @@ class NetworkSettingInterface(BaseSettingInterface):
 
         worker = NetworkTestWorker(self)
         self.test_worker = worker
-        worker.finished_signal.connect(self._on_test_network_finished)
-        worker.finished.connect(lambda: self._retire_worker("test_worker", worker))
-        worker.finished.connect(worker.deleteLater)
+        worker.finished_signal.connect(self._on_test_network_finished, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._retire_test_worker, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(worker.deleteLater, Qt.ConnectionType.QueuedConnection)
         worker.start()
+
+    @Slot()
+    def _retire_test_worker(self) -> None:
+        self._retire_worker("test_worker")
 
     def _on_test_network_finished(self, success: bool, msg: str) -> None:
         self.testNetworkCard.button.setEnabled(True)
@@ -416,10 +421,14 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.fetchDomainCard.button.setEnabled(False)
         worker = DomainFetchWorker(self)
         self.fetch_worker = worker
-        worker.finished_signal.connect(self._on_domains_fetched)
-        worker.finished.connect(lambda: self._retire_worker("fetch_worker", worker))
-        worker.finished.connect(worker.deleteLater)
+        worker.finished_signal.connect(self._on_domains_fetched, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._retire_fetch_worker, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(worker.deleteLater, Qt.ConnectionType.QueuedConnection)
         worker.start()
+
+    @Slot()
+    def _retire_fetch_worker(self) -> None:
+        self._retire_worker("fetch_worker")
 
     def _on_domains_fetched(self, domains: list[str], error_message: str) -> None:
         self.fetchDomainCard.button.setText("获取")
@@ -604,6 +613,7 @@ class DownloadSettingInterface(BaseSettingInterface):
 class AboutSettingInterface(BaseSettingInterface):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
+        self.updateWorker: UpdateCheckWorker | None = None
         self.setObjectName("AboutSettingInterface")
         self._init_about_settings()
 
@@ -690,10 +700,14 @@ class AboutSettingInterface(BaseSettingInterface):
         self.updateCard.button.setEnabled(False)
         worker = UpdateCheckWorker(self)
         self.updateWorker = worker
-        worker.finished_signal.connect(self._on_update_checked)
-        worker.finished.connect(lambda: self._retire_worker("updateWorker", worker))
-        worker.finished.connect(worker.deleteLater)
+        worker.finished_signal.connect(self._on_update_checked, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._retire_update_worker, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(worker.deleteLater, Qt.ConnectionType.QueuedConnection)
         worker.start()
+
+    @Slot()
+    def _retire_update_worker(self) -> None:
+        self._retire_worker("updateWorker")
 
     def _on_update_checked(self, result: dict[str, object]) -> None:
         self.updateCard.button.setText("检查更新")

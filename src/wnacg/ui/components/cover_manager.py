@@ -5,12 +5,15 @@ import hashlib
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from types import MethodType
 from typing import cast
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage
+from shiboken6 import isValid
 
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
@@ -31,6 +34,35 @@ _COVER_CACHE_MAX_FILES = 2_000
 _COVER_CACHE_LOCK = threading.RLock()
 _IMAGE_CONTENT_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 type CoverCallback = Callable[[str, QImage], None]
+
+
+class _CoverCallbackRef:
+    """Keep QObject-bound cover callbacks weak and verify their C++ peer before use."""
+
+    def __init__(self, callback: CoverCallback) -> None:
+        self._receiver: weakref.ReferenceType[object] | None = None
+        self._method: Callable[[object, str, QImage], None] | None = None
+        self._strong_callback: CoverCallback | None = None
+        if isinstance(callback, MethodType):
+            try:
+                self._receiver = weakref.ref(callback.__self__)
+                self._method = cast(Callable[[object, str, QImage], None], callback.__func__)
+            except TypeError:
+                self._strong_callback = callback
+        else:
+            self._strong_callback = callback
+
+    def invoke(self, url: str, image: QImage) -> bool:
+        if self._strong_callback is not None:
+            self._strong_callback(url, image)
+            return True
+        receiver = self._receiver() if self._receiver is not None else None
+        if receiver is None or self._method is None:
+            return False
+        if isinstance(receiver, QObject) and not isValid(receiver):
+            return False
+        self._method(receiver, url, image)
+        return True
 
 
 def get_temp_dir() -> str:
@@ -156,10 +188,10 @@ class CoverManagerClass(QObject):
         self.cover_pool = QThreadPool()
         self.cover_pool.setMaxThreadCount(5)
         self.signals = CoverManagerSignals()
-        self.signals.finished.connect(self._on_task_finished)
+        self.signals.finished.connect(self._on_task_finished, Qt.ConnectionType.QueuedConnection)
 
         # In-flight task tracker to avoid duplicate downloads of the same URL
-        self._pending_callbacks: dict[str, list[CoverCallback]] = {}
+        self._pending_callbacks: dict[str, list[_CoverCallbackRef]] = {}
         self._stop_event = threading.Event()
 
     def load(self, url: str, callback: CoverCallback | None = None) -> None:
@@ -168,10 +200,10 @@ class CoverManagerClass(QObject):
         # Disk cache loading is handled asynchronously inside CoverFetchTask.
         if url in self._pending_callbacks:
             if callback:
-                self._pending_callbacks[url].append(callback)
+                self._pending_callbacks[url].append(_CoverCallbackRef(callback))
             return
 
-        self._pending_callbacks[url] = [callback] if callback else []
+        self._pending_callbacks[url] = [_CoverCallbackRef(callback)] if callback else []
         task = CoverFetchTask(url, self.signals, self._stop_event)
         self.cover_pool.start(task)
 
@@ -181,9 +213,9 @@ class CoverManagerClass(QObject):
     def _on_task_finished(self, url: str, img: QImage) -> None:
         if url in self._pending_callbacks:
             cbs = self._pending_callbacks.pop(url)
-            for cb in cbs:
+            for callback in cbs:
                 try:
-                    cb(url, img)
+                    callback.invoke(url, img)
                 except RuntimeError:
                     logger.debug("Cover callback target was already deleted", url=url)
                 except Exception as error:

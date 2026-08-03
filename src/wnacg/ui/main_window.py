@@ -5,7 +5,7 @@ import contextlib
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 from qfluentwidgets import (
@@ -82,7 +82,7 @@ class MainWindow(FluentWindow):
 
         self.initNavigation()
         self._init_tray()
-        downloader.signals.speed_update.connect(self._update_speed_title)
+        downloader.signals.speed_update.connect(self._update_speed_title, Qt.ConnectionType.QueuedConnection)
 
     def _update_speed_title(self, speed_str: str) -> None:
         if speed_str:
@@ -91,11 +91,8 @@ class MainWindow(FluentWindow):
             self.setWindowTitle("WNACG Downloader")
 
     def changeEvent(self, event: QEvent) -> None:
-        from PySide6.QtCore import QEvent
-
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
-            for card in self.homeInterface.card_map.values():
-                card.update_download_state()
+            self.homeInterface.refresh_card_states(force=True)
         super().changeEvent(event)
 
     def initNavigation(self) -> None:
@@ -119,7 +116,7 @@ class MainWindow(FluentWindow):
         if item:
             self.downloadBadge = None
 
-        self._downloader.signals.badge_update.connect(self._update_badge)
+        self._downloader.signals.badge_update.connect(self._update_badge, Qt.ConnectionType.QueuedConnection)
 
     def _update_badge(self, count: int) -> None:
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
@@ -176,16 +173,16 @@ class MainWindow(FluentWindow):
         self.trayIcon.activated.connect(self._on_tray_activated)
         self.trayIcon.show()
 
-        self._downloader.signals.task_status_changed.connect(self._on_task_status_for_tray)
+        self._downloader.signals.task_status_changed.connect(
+            self._on_task_status_for_tray,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def _on_task_status_for_tray(self, task_id: str, status: TaskStatus) -> None:
-        from wnacg.domain.models import TaskStatus
-
         if status == TaskStatus.COMPLETED:
             active_count = self._repository.count_tasks(frozenset({TaskStatus.PENDING, TaskStatus.DOWNLOADING}))
 
             if active_count == 0:
-                from PySide6.QtCore import Qt
                 from qfluentwidgets import InfoBar, InfoBarPosition
 
                 InfoBar.success(
