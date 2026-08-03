@@ -16,6 +16,7 @@ from qfluentwidgets import (
     InfoBadgePosition,
     MessageBoxBase,
     SubtitleLabel,
+    qconfig,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -25,6 +26,7 @@ from wnacg.domain.models import TaskStatus
 from wnacg.infrastructure.config import cfg
 from wnacg.infrastructure.logger import logger
 from wnacg.ui.components.cover_manager import CoverManagerClass
+from wnacg.ui.theme import danger_text_style
 from wnacg.ui.views.download_interface import DownloadInterface
 from wnacg.ui.views.home_interface import HomeInterface
 from wnacg.ui.views.setting_interface import (
@@ -37,6 +39,7 @@ from wnacg.ui.views.setting_interface import (
 class ClosePromptDialog(MessageBoxBase):
     def __init__(self, active_count: int = 0, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._has_active_downloads = active_count > 0
         self.titleLabel = SubtitleLabel("确认关闭", self)
         self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
 
@@ -46,7 +49,6 @@ class ClosePromptDialog(MessageBoxBase):
                 "建议您选择“最小化到托盘”，让它在后台默默下载。"
             )
             self.contentLabel = BodyLabel(text, self)
-            self.contentLabel.setStyleSheet("color: #d9534f; font-weight: bold;")
         else:
             self.contentLabel = BodyLabel("要彻底退出软件，还是隐藏到后台系统托盘？", self)
 
@@ -59,6 +61,12 @@ class ClosePromptDialog(MessageBoxBase):
 
         self.yesButton.setText("最小化到托盘")
         self.cancelButton.setText("彻底退出")
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        style = danger_text_style(bold=True) if self._has_active_downloads else ""
+        self.contentLabel.setStyleSheet(style)
 
 
 class MainWindow(FluentWindow):

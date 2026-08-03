@@ -37,11 +37,11 @@ def main() -> int:
 
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QApplication
-        from qfluentwidgets import Theme, setTheme
 
         from wnacg.application.downloader import DownloaderWorker
         from wnacg.ui.components.cover_manager import CoverManagerClass
         from wnacg.ui.main_window import MainWindow
+        from wnacg.ui.theme import apply_application_theme
 
         task_repository = SQLiteTaskRepository()
         cover_manager = CoverManagerClass()
@@ -57,7 +57,7 @@ def main() -> int:
             application = application_instance
         else:
             raise RuntimeError("A non-GUI Qt application already exists")
-        setTheme(Theme.AUTO)
+        apply_application_theme(cfg.appearance_theme)
 
         window = MainWindow(downloader_manager, task_repository, cover_manager)
         services_stopped = False

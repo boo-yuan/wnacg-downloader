@@ -45,11 +45,13 @@ def test_config_save_is_atomic_and_leaves_no_temporary_file(
 ) -> None:
     config_path = tmp_path / "config.json"
     monkeypatch.setattr(config, "CONFIG_FILE", config_path)
-    settings = config.AppConfig(max_concurrent_tasks=4)
+    settings = config.AppConfig(max_concurrent_tasks=4, appearance_theme=config.AppearanceTheme.DARK)
 
     settings.save()
 
-    assert config.AppConfig.model_validate_json(config_path.read_text(encoding="utf-8")).max_concurrent_tasks == 4
+    persisted = config.AppConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
+    assert persisted.max_concurrent_tasks == 4
+    assert persisted.appearance_theme is config.AppearanceTheme.DARK
     assert list(tmp_path.glob("*.tmp")) == []
 
 

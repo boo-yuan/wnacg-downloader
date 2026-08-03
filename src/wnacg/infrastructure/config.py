@@ -29,6 +29,14 @@ class ProxyMode(StrEnum):
     CUSTOM = "custom"
 
 
+class AppearanceTheme(StrEnum):
+    """Persisted application appearance preference."""
+
+    SYSTEM = "system"
+    LIGHT = "light"
+    DARK = "dark"
+
+
 class AppConfig(BaseSettings):
     """Strict settings loaded from JSON and optional ``WNACG_`` environment values."""
 
@@ -40,6 +48,7 @@ class AppConfig(BaseSettings):
     _environment_fields: set[str] = PrivateAttr(default_factory=set)
 
     proxy_mode: ProxyMode = ProxyMode.SYSTEM
+    appearance_theme: AppearanceTheme = AppearanceTheme.SYSTEM
     custom_proxy: str = "http://127.0.0.1:7890"
     download_dir: str = str(Path.home() / "Downloads" / "wnacg")
     domain: str = "www.wnacg.com"

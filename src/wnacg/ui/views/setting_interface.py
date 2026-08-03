@@ -26,12 +26,13 @@ from qfluentwidgets import (
     SettingCardGroup,
     SpinBox,
     SwitchButton,
+    qconfig,
     setFont,
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from wnacg.domain.models import DownloadFormat, DownloadNaming
-from wnacg.infrastructure.config import ProxyMode, cfg
+from wnacg.infrastructure.config import AppearanceTheme, ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.infrastructure.domain_discovery import DomainDiscoveryError, discover_official_domains
 from wnacg.infrastructure.http_streams import close_stream_response, new_network_event_loop
@@ -41,6 +42,7 @@ from wnacg.infrastructure.network_safety import (
     ensure_public_peer_address,
 )
 from wnacg.infrastructure.updater import Updater
+from wnacg.ui.theme import apply_application_theme, setting_page_style
 from wnacg.ui.worker_lifecycle import stop_qthread
 
 type SettingIcon = str | QIcon | FluentIconBase
@@ -200,12 +202,20 @@ class BaseSettingInterface(ScrollArea):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self.scrollWidget = QWidget()
+        self.scrollWidget.setObjectName("settingsScrollWidget")
+        self.viewport().setObjectName("settingsViewport")
         self.expandLayout = ExpandLayout(self.scrollWidget)
 
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setWidget(self.scrollWidget)
         self.setWidgetResizable(True)
-        self.setStyleSheet("QScrollArea, .QScrollArea > QWidget > QWidget { background: transparent; }")
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        self.setStyleSheet(setting_page_style())
+        self.viewport().update()
+        self.scrollWidget.update()
 
     def _retire_worker(self, attribute: str) -> None:
         """Clear a finished worker reference before Qt deletes its C++ object."""
@@ -620,6 +630,21 @@ class AboutSettingInterface(BaseSettingInterface):
     def _init_about_settings(self) -> None:
         self.aboutGroup = SettingCardGroup("系统与关于", self.scrollWidget)
 
+        self.themeCard = ComboBoxSettingCard(
+            icon=FIF.PALETTE,
+            title="外观主题",
+            content="默认跟随 Windows 系统主题，也可固定使用浅色或深色模式",
+            texts=["跟随系统", "浅色模式", "深色模式"],
+            parent=self.aboutGroup,
+        )
+        theme_index = {
+            AppearanceTheme.SYSTEM: 0,
+            AppearanceTheme.LIGHT: 1,
+            AppearanceTheme.DARK: 2,
+        }[cfg.appearance_theme]
+        self.themeCard.comboBox.setCurrentIndex(theme_index)
+        self.themeCard.comboBox.currentIndexChanged.connect(self._on_theme_changed)
+
         self.logCard = PushSettingCard(
             text="查看日志",
             icon=FIF.DOCUMENT,
@@ -673,6 +698,7 @@ class AboutSettingInterface(BaseSettingInterface):
         self.closeActionCard.comboBox.setCurrentIndex(idx)
         self.closeActionCard.comboBox.currentIndexChanged.connect(self._on_close_action_changed)
 
+        self.aboutGroup.addSettingCard(self.themeCard)
         self.aboutGroup.addSettingCard(self.closeActionCard)
         self.aboutGroup.addSettingCard(self.logCard)
         self.aboutGroup.addSettingCard(self.helpCard)
@@ -683,6 +709,14 @@ class AboutSettingInterface(BaseSettingInterface):
     def _open_log_file(self) -> None:
         LOG_PATH.touch(exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_PATH)))
+
+    def _on_theme_changed(self, index: int) -> None:
+        themes = (AppearanceTheme.SYSTEM, AppearanceTheme.LIGHT, AppearanceTheme.DARK)
+        if index < 0 or index >= len(themes):
+            return
+        cfg.appearance_theme = themes[index]
+        cfg.save()
+        apply_application_theme(cfg.appearance_theme)
 
     def _on_close_action_changed(self, index: int) -> None:
         if index == 0:

@@ -6,9 +6,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QPixmap
+from PySide6.QtGui import QContextMenuEvent, QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, ThemeColor
+from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, qconfig
 
 from wnacg.application.file_paths import archive_path, task_directory
 from wnacg.application.ports import TaskRepository
@@ -17,6 +17,13 @@ from wnacg.infrastructure.config import cfg
 from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
+from wnacg.ui.theme import (
+    accent_color,
+    cover_placeholder_style,
+    muted_text_color,
+    primary_text_style,
+    selected_card_style,
+)
 
 _IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
@@ -96,7 +103,6 @@ class ComicCard(ElevatedCardWidget):
         self.coverLabel = QLabel(self)
         self.coverLabel.setFixedSize(196, 250)
         self.coverLabel.setScaledContents(True)
-        self.coverLabel.setStyleSheet("background-color: rgba(0,0,0,0.05); border-radius: 8px;")
 
         # 标题 (完整显示，自适应高度)
         self.titleLabel = QLabel(comic.title, self)
@@ -113,10 +119,8 @@ class ComicCard(ElevatedCardWidget):
         self.infoLayout.setContentsMargins(0, 0, 0, 0)
         self.picCountLabel = CaptionLabel(comic.pic_count, self)
         self.picCountLabel.setFixedHeight(20)
-        self.picCountLabel.setTextColor(ThemeColor.PRIMARY.color())
         self.dateLabel = CaptionLabel(comic.date, self)
         self.dateLabel.setFixedHeight(20)
-        self.dateLabel.setTextColor(QColor("#888888"))
         self.infoLayout.addWidget(self.picCountLabel)
         self.infoLayout.addStretch(1)
         self.infoLayout.addWidget(self.dateLabel)
@@ -145,8 +149,18 @@ class ComicCard(ElevatedCardWidget):
         self.setFixedHeight(total_h)
 
         self.loader = None
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
         if self.comic.cover_url:
             self._load_cover()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        self.coverLabel.setStyleSheet(cover_placeholder_style())
+        self.titleLabel.setStyleSheet(primary_text_style())
+        self.picCountLabel.setTextColor(accent_color())
+        self.dateLabel.setTextColor(muted_text_color())
+        if self._is_selected:
+            self.setStyleSheet(selected_card_style("ComicCard"))
 
     def _load_cover(self) -> None:
         self._cover_manager.load(self.comic.cover_url, self._set_cover)
@@ -228,10 +242,7 @@ class ComicCard(ElevatedCardWidget):
             return
         self._is_selected = selected
         if selected:
-            primary = ThemeColor.PRIMARY.color().name()
-            self.setStyleSheet(
-                f"ComicCard {{ border: 2px solid {primary}; background-color: {primary}1A; border-radius: 8px; }}"
-            )
+            self.setStyleSheet(selected_card_style("ComicCard"))
         else:
             self.setStyleSheet("")
 

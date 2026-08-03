@@ -22,6 +22,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
     SubtitleLabel,
     TitleLabel,
+    qconfig,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -32,6 +33,17 @@ from wnacg.domain.models import CANCELLABLE_TASK_STATUSES, DownloadTask, TaskSta
 from wnacg.infrastructure.config import cfg
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
+from wnacg.ui.theme import (
+    accent_color,
+    danger_text_color,
+    muted_text_color,
+    muted_text_style,
+    primary_text_style,
+    round_accent_button_style,
+    selected_card_style,
+    success_text_color,
+    warning_text_color,
+)
 
 
 class CancelPromptDialog(MessageBoxBase):
@@ -102,7 +114,6 @@ class DownloadItemCard(CardWidget):
         self.progressBar.setRange(0, 100)
 
         self.statusLabel = QLabel(self._get_status_text(), self)
-        self.statusLabel.setStyleSheet("color: #666;")
 
         bottomLayout.addWidget(self.progressBar, 1)
         bottomLayout.addWidget(self.statusLabel, 0)
@@ -111,6 +122,22 @@ class DownloadItemCard(CardWidget):
 
         self._update_progress_ui()
         self._update_btns()
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        status_colors = {
+            TaskStatus.DOWNLOADING: accent_color(),
+            TaskStatus.COMPLETED: success_text_color(),
+            TaskStatus.FAILED: danger_text_color(),
+            TaskStatus.MISSING: warning_text_color(),
+        }
+        status_color = status_colors.get(self.task.status, muted_text_color())
+        self.statusLabel.setStyleSheet(
+            f"color: rgba({status_color.red()}, {status_color.green()}, {status_color.blue()}, 255);"
+        )
+        if self._is_selected:
+            self.setStyleSheet(selected_card_style("DownloadItemCard"))
 
     def _get_status_text(self) -> str:
         err_msg = self.task.error_message or ""
@@ -141,6 +168,7 @@ class DownloadItemCard(CardWidget):
             self.progressBar.pause()
         else:
             self.progressBar.resume()
+        self._apply_theme_colors()
 
     def _update_btns(self) -> None:
         self.pauseBtn.setVisible(self.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
@@ -208,10 +236,7 @@ class DownloadItemCard(CardWidget):
             return
         self._is_selected = selected
         if selected:
-            self.setStyleSheet(
-                "DownloadItemCard { border: 2px solid #009faa; "
-                "background-color: rgba(0, 159, 170, 0.1); border-radius: 8px; }"
-            )
+            self.setStyleSheet(selected_card_style("DownloadItemCard"))
         else:
             self.setStyleSheet("")
 
@@ -338,18 +363,21 @@ class DownloadInterface(QWidget):
         self._update_empty_state()
 
         # 返回顶部悬浮按钮
-        from qfluentwidgets import PrimaryToolButton, ThemeColor, setFont
+        from qfluentwidgets import PrimaryToolButton, setFont
 
         self.backToTopBtn = PrimaryToolButton(FIF.UP, self)
         setFont(self.backToTopBtn)
         self.backToTopBtn.setFixedSize(40, 40)
         self.backToTopBtn.hide()
-        primary = ThemeColor.PRIMARY.color().name()
-        self.backToTopBtn.setStyleSheet(
-            f"PrimaryToolButton {{ border-radius: 20px; background-color: {primary}; border: none; }}"
-        )
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        self.emptySubtitle.setStyleSheet(muted_text_style(pixel_size=15))
+        self.pageLabel.setStyleSheet(primary_text_style())
+        self.backToTopBtn.setStyleSheet(round_accent_button_style())
 
     def _show_hint(self) -> None:
         InfoBar.info(
@@ -413,7 +441,6 @@ class DownloadInterface(QWidget):
 
         self.emptySubtitle = SubtitleLabel("暂无下载任务 / 你的下载列表很干净，快去主页搜索喜欢的漫画吧！", self)
         self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.emptySubtitle.setStyleSheet("color: #888888; font-size: 15px;")
 
         emptyLayout.addStretch(1)
         emptyLayout.addWidget(self.emptyImage)

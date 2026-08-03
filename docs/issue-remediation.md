@@ -57,8 +57,8 @@
 - `uv lock --check`
 - Ruff 全规则集检查与 `ruff format --check`
 - Pyright：0 errors
-- pytest：102 passed
-- 全包（含入口和 Qt UI）分支覆盖率：62.33%（门槛 55%）
+- pytest：106 passed
+- 全包（含入口和 Qt UI）分支覆盖率：63.63%（门槛 55%）
 - 源码 Qt 离屏烟雾测试
 - `run.bat --smoke-test`
 - PyInstaller 单文件构建
@@ -113,3 +113,4 @@
 - Windows 网络线程改用原生 Selector 事件循环，绕开 curl-cffi 在 Proactor 下额外创建的 selector 桥接线程，消除 CFFI 回调与 Qt 下载线程组合产生的 `python312.dll / 0xc0000005` 访问冲突。
 - 搜索卡片状态改为 Home 页面持有的单 worker 批量快照；卡片销毁前取消旧代查询，下载、搜索、封面和设置 worker 均以 Qt 队列连接回到主线程，封面目标使用弱引用并校验 Shiboken C++ 对象有效性。
 - 直链列表末尾的 `shoucang.jpg` 是站点收藏按钮而非漫画图片；解析时显式过滤，避免固定多 1 张并触发大量详情页回退请求。
+- 外观设置支持跟随系统、浅色和深色三种模式，默认跟随 Windows 并持久化用户选择；自定义 UI 色彩集中为主题令牌，设置功能区的滚动层、视口和内容层显式使用主题背景，其他页面、卡片、状态、弹窗与动态加载也可即时刷新。

@@ -17,7 +17,7 @@ from qfluentwidgets import (
     PrimaryToolButton,
     PushButton,
     SearchLineEdit,
-    ThemeColor,
+    qconfig,
     setFont,
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -29,7 +29,14 @@ from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.ui.card_state_coordinator import CardStateCoordinator
 from wnacg.ui.components.comic_card import ComicCard
 from wnacg.ui.components.cover_manager import CoverManagerClass
+from wnacg.ui.components.loading_state import AnimatedLoadingState
 from wnacg.ui.components.selectable_container import SelectableContainer
+from wnacg.ui.theme import (
+    accent_color,
+    active_page_button_style,
+    muted_text_style,
+    round_accent_button_style,
+)
 from wnacg.ui.worker_lifecycle import stop_qthread
 
 
@@ -92,6 +99,8 @@ class HomeInterface(QWidget):
         self.workers = {}
         self.card_map = {}
         self._old_workers = []
+        self._pagination_buttons: list[PushButton] = []
+        self._pagination_dots: list[QLabel] = []
 
         # Spacer for vertical centering (top)
         self.topSpacerWidget = QWidget()
@@ -104,7 +113,7 @@ class HomeInterface(QWidget):
         heroLayout.setSpacing(12)
 
         from PySide6.QtGui import QPixmap
-        from qfluentwidgets import SubtitleLabel, ThemeColor, TitleLabel
+        from qfluentwidgets import SubtitleLabel, TitleLabel
 
         self.logoImage = QLabel(self)
         icon_path = Path(__file__).resolve().parents[2] / "resource" / "icon.png"
@@ -118,12 +127,9 @@ class HomeInterface(QWidget):
 
         self.logoLabel = TitleLabel("WNACG Downloader", self)
         self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        primary = ThemeColor.PRIMARY.color().name()
-        self.logoLabel.setStyleSheet(f"color: {primary}; font-size: 28px; font-weight: 900;")
 
         self.welcomeLabel = SubtitleLabel("开启您的漫画探索之旅", self)
         self.welcomeLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.welcomeLabel.setStyleSheet("color: #888888; font-size: 15px;")
 
         heroLayout.addWidget(self.logoImage)
         heroLayout.addWidget(self.logoLabel)
@@ -211,12 +217,25 @@ class HomeInterface(QWidget):
         setFont(self.backToTopBtn)
         self.backToTopBtn.setFixedSize(40, 40)
         self.backToTopBtn.hide()
-        primary = ThemeColor.PRIMARY.color().name()
-        self.backToTopBtn.setStyleSheet(
-            f"PrimaryToolButton {{ border-radius: 20px; background-color: {primary}; border: none; }}"
-        )
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        qconfig.themeChanged.connect(self._apply_theme_colors)
+        self._apply_theme_colors()
+
+    def _apply_theme_colors(self, _theme: object | None = None) -> None:
+        accent = accent_color()
+        self.logoLabel.setStyleSheet(
+            f"color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 255); font-size: 28px; font-weight: 900;"
+        )
+        self.welcomeLabel.setStyleSheet(muted_text_style(pixel_size=15))
+        self.emptySubtitle.setStyleSheet(muted_text_style(pixel_size=15))
+        self.backToTopBtn.setStyleSheet(round_accent_button_style())
+        self.loadingWidget.refresh_theme()
+        for button in self._pagination_buttons:
+            if bool(button.property("currentPage")):
+                button.setStyleSheet(active_page_button_style())
+        for dots in self._pagination_dots:
+            dots.setStyleSheet(muted_text_style())
 
     def _show_hint(self) -> None:
         InfoBar.info(
@@ -315,7 +334,6 @@ class HomeInterface(QWidget):
 
         self.emptySubtitle = SubtitleLabel("可能是关键词有误或网络超时，请尝试换个关键词或稍后再试。", self)
         self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.emptySubtitle.setStyleSheet("color: #888888; font-size: 15px;")
 
         emptyLayout.addStretch(1)
         emptyLayout.addWidget(self.emptyImage)
@@ -327,30 +345,14 @@ class HomeInterface(QWidget):
         self.emptyWidget.hide()
 
     def _init_loading_state(self) -> None:
-        from qfluentwidgets import ProgressRing, SubtitleLabel
-
-        self.loadingWidget = QWidget(self)
-        loadingLayout = QVBoxLayout(self.loadingWidget)
-        loadingLayout.setSpacing(24)
-
-        self.progressRing = ProgressRing(self)
-        self.progressRing.setFixedSize(60, 60)
-        self.progressRing.setStrokeWidth(6)
-
-        self.loadingText = SubtitleLabel("正在跨越长城获取数据...", self)
-        self.loadingText.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loadingText.setStyleSheet("color: #888888; font-size: 16px;")
-
-        loadingLayout.addStretch(1)
-        loadingLayout.addWidget(self.progressRing, 0, Qt.AlignmentFlag.AlignHCenter)
-        loadingLayout.addWidget(self.loadingText)
-        loadingLayout.addStretch(2)
-
+        self.loadingWidget = AnimatedLoadingState(parent=self)
         self.contentLayout.addWidget(self.loadingWidget)
         self.loadingWidget.hide()
 
     def _update_pagination(self) -> None:
         # Clear existing
+        self._pagination_buttons.clear()
+        self._pagination_dots.clear()
         while self.paginationLayout.count():
             item = self.paginationLayout.takeAt(0)
             if item is None:
@@ -385,16 +387,20 @@ class HomeInterface(QWidget):
                 dots = QLabel("...", self.bottomWidget)
                 dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 dots.setFixedWidth(24)
+                dots.setStyleSheet(muted_text_style())
+                self._pagination_dots.append(dots)
                 self.paginationLayout.addWidget(dots)
 
             text = str(p)
             btn = PushButton(text, self.bottomWidget)
             btn.setMinimumWidth(36)
             btn.setFixedHeight(32)
+            is_current_page = p == self.current_page
+            btn.setProperty("currentPage", is_current_page)
+            self._pagination_buttons.append(btn)
 
-            if p == self.current_page:
-                primary = ThemeColor.PRIMARY.color().name()
-                btn.setStyleSheet(f"background-color: {primary}; color: white; border: none; border-radius: 4px;")
+            if is_current_page:
+                btn.setStyleSheet(active_page_button_style())
             else:
                 visible_pages.append(p)
 
