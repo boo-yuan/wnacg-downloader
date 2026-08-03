@@ -128,7 +128,7 @@ uv run --locked python -m wnacg --smoke-test
 uv audit --locked --no-dev
 ```
 
-质量门禁覆盖整个 `wnacg` 包，包括入口和 Qt UI；分支覆盖率不得低于 55%。当前回归集为 84 项测试，最近一次全包分支覆盖率为 59.25%。
+质量门禁覆盖整个 `wnacg` 包，包括入口和 Qt UI；分支覆盖率不得低于 55%。当前回归集为 85 项测试，最近一次全包分支覆盖率为 59.28%。
 
 GitHub CI 在 Python 3.12 和 3.13 上执行 Ruff、严格 Pyright、pytest、源码烟雾测试、依赖审计和 CycloneDX SBOM 导出验证。
 
@@ -166,9 +166,11 @@ GitHub CI 在 Python 3.12 和 3.13 上执行 Ruff、严格 Pyright、pytest、�
 - 修复域名发布页布局和命名规则变化导致的空结果，支持当前 `wn+数字` 域名并提供多发布页回退。
 - 下载队列改为每页最多创建 100 个任务卡片；新增与删除刷新合并处理，全部操作仍覆盖完整队列。
 - 单本漫画使用固定数量的图片 worker，不再为全部图片一次性创建异步任务；所有流式 HTTP 响应在成功、失败和取消路径都确定释放。
+- Windows 下载线程使用原生 Selector 事件循环，避免 curl-cffi 的 Proactor 桥接线程与 Qt `QThread` 组合触发原生访问冲突。
+- 直链列表会过滤站点混入的 `shoucang.jpg` 收藏按钮资源，图片数准确时不再误触发逐页回退请求。
 - 漫画目录改为纯标题命名，同名任务使用数字后缀安全避让，不再把 `aid` 写入文件夹名。
 - 重构为 `domain`、`application`、`infrastructure`、`ui` 分层，并从入口显式注入仓储与下载服务。
-- 建立 Ruff、严格 Pyright、84 项 pytest 回归测试、全包分支覆盖率门槛、源码烟雾测试、依赖审计和 SBOM 验证；EXE 构建与烟雾测试由发布者在本地执行。
+- 建立 Ruff、严格 Pyright、85 项 pytest 回归测试、全包分支覆盖率门槛、源码烟雾测试、依赖审计和 SBOM 验证；EXE 构建与烟雾测试由发布者在本地执行。
 
 </details>
 

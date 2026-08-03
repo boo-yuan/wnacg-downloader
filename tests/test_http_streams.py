@@ -1,11 +1,16 @@
 """Streaming HTTP resources are released on every exit path."""
 
+import asyncio
 from typing import cast
 
 import pytest
 from curl_cffi.requests import Response
 
-from wnacg.infrastructure.http_streams import close_async_stream_response, close_stream_response
+from wnacg.infrastructure.http_streams import (
+    close_async_stream_response,
+    close_stream_response,
+    new_network_event_loop,
+)
 
 
 class QuitEvent:
@@ -27,6 +32,7 @@ class SyncResponse:
 class AsyncResponse:
     def __init__(self) -> None:
         self.quit_now = QuitEvent()
+        self.astream_task: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.was_closed = False
 
     async def aclose(self) -> None:
@@ -49,3 +55,11 @@ async def test_async_stream_is_aborted_before_join() -> None:
 
     assert fake.quit_now.was_set
     assert fake.was_closed
+
+
+def test_windows_network_loop_supports_reader_callbacks() -> None:
+    loop = new_network_event_loop()
+    try:
+        assert hasattr(loop, "add_reader")
+    finally:
+        loop.close()

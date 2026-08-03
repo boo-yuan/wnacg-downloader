@@ -263,7 +263,10 @@ class WnacgCrawler:
         if match is None:
             return []
         urls = re.findall(r"url\s*:\s*(?:fast_img_host\+)?\\*['\"](.*?)\\*['\"]", match.group(1))
-        return [f"https:{url}" if url.startswith("//") else urllib.parse.urljoin(base_url, url) for url in urls]
+        resolved = [f"https:{url}" if url.startswith("//") else urllib.parse.urljoin(base_url, url) for url in urls]
+        return [
+            url for url in resolved if urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].casefold() != "shoucang.jpg"
+        ]
 
     @classmethod
     async def get_all_raw_urls(cls, aid: str, connection_slot: ConnectionSlot | None = None) -> list[str]:

@@ -38,7 +38,7 @@ from wnacg.application.ports import ImageRecord, TaskRepository
 from wnacg.domain.models import CANCELLABLE_TASK_STATUSES, Comic, DownloadOptions, DownloadTask, TaskStatus
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
-from wnacg.infrastructure.http_streams import close_async_stream_response
+from wnacg.infrastructure.http_streams import close_async_stream_response, new_network_event_loop
 from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
@@ -819,7 +819,7 @@ class DownloaderWorker(QThread):
             await asyncio.sleep(1.0)
 
     def run(self) -> None:
-        self._loop = asyncio.new_event_loop()
+        self._loop = new_network_event_loop()
         asyncio.set_event_loop(self._loop)
         self._connection_limiter = AdjustableLimiter(cfg.global_max_connections)
 

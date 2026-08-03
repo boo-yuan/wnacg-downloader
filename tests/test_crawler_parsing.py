@@ -39,7 +39,12 @@ def test_view_page_parser_returns_links_and_page_count() -> None:
 
 
 def test_gallery_and_raw_url_parsers() -> None:
-    gallery_html = """<script>var imglist = [{url: fast_img_host+'//img.example/1.jpg'}];</script>"""
+    gallery_html = """
+    <script>var imglist = [
+      {url: fast_img_host+'//img.example/1.jpg'},
+      {url: fast_img_host+'//img.example/shoucang.jpg'}
+    ];</script>
+    """
     assert WnacgCrawler._parse_gallery_urls(gallery_html, "https://www.wnacg.com") == ["https://img.example/1.jpg"]
     assert WnacgCrawler._parse_raw_url('<img id="picarea" src="//img.example/2.jpg">') == ("https://img.example/2.jpg")
     assert WnacgCrawler._parse_raw_url("<html></html>") == ""

@@ -57,8 +57,8 @@
 - `uv lock --check`
 - Ruff 全规则集检查与 `ruff format --check`
 - Pyright：0 errors
-- pytest：84 passed
-- 全包（含入口和 Qt UI）分支覆盖率：59.25%（门槛 55%）
+- pytest：85 passed
+- 全包（含入口和 Qt UI）分支覆盖率：59.28%（门槛 55%）
 - 源码 Qt 离屏烟雾测试
 - `run.bat --smoke-test`
 - PyInstaller 单文件构建
@@ -109,3 +109,5 @@
 - 下载图片改为固定 worker 池消费待下载序列，不再按整本图片数量创建同等数量的 asyncio 任务。
 - curl-cffi 流式响应在完整读取、校验异常、大小超限和任务取消时都显式关闭，防止长时间运行积累原生句柄。
 - 队列徽标和状态计数使用 SQL `COUNT`，启动时只调度可用槽位一次，消除大队列反复全量读取的平方级开销。
+- Windows 网络线程改用原生 Selector 事件循环，绕开 curl-cffi 在 Proactor 下额外创建的 selector 桥接线程，消除 CFFI 回调与 Qt 下载线程组合产生的 `python312.dll / 0xc0000005` 访问冲突。
+- 直链列表末尾的 `shoucang.jpg` 是站点收藏按钮而非漫画图片；解析时显式过滤，避免固定多 1 张并触发大量详情页回退请求。

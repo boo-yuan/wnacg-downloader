@@ -34,7 +34,7 @@ from wnacg.domain.models import DownloadFormat, DownloadNaming
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.infrastructure.domain_discovery import DomainDiscoveryError, discover_official_domains
-from wnacg.infrastructure.http_streams import close_stream_response
+from wnacg.infrastructure.http_streams import close_stream_response, new_network_event_loop
 from wnacg.infrastructure.logger import LOG_PATH, logger
 from wnacg.infrastructure.network_safety import (
     ensure_public_https_url_sync,
@@ -153,7 +153,7 @@ class UpdateCheckWorker(QThread):
     finished_signal = Signal(dict)
 
     def run(self) -> None:
-        loop = asyncio.new_event_loop()
+        loop = new_network_event_loop()
         try:
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(Updater.check_update())
