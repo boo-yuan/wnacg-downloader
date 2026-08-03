@@ -1,353 +1,277 @@
+"""TLS-verified WNACG HTTP adapter and HTML parsers."""
+
 import asyncio
 import re
-import threading
+import time
 import urllib.parse
+from typing import Any
 
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession, Session
+from curl_cffi.requests import AsyncSession, Response, Session
 
 from wnacg.domain.models import Comic
-from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.logger import logger
 
 
+class CrawlError(RuntimeError):
+    """Raised when a complete, trustworthy crawl result cannot be produced."""
+
+
 class WnacgCrawler:
-    
-    _domain_lock = threading.Lock()
-    
+    """Fetch and parse gallery metadata without retaining mutable mirror state."""
+
     @staticmethod
-    def get_sync_client() -> Session:
-        kwargs = {
-            "impersonate": "chrome",
-            "verify": False,
-            "timeout": 15.0,
-        }
-        if cfg.proxy_mode == "custom":
-            kwargs["proxies"] = cfg.curl_cffi_proxies
-        elif cfg.proxy_mode == "direct":
-            kwargs["trust_env"] = False
-        else: # system
-            kwargs["trust_env"] = True
-            
-        return Session(**kwargs)
-        
+    def _session_options() -> dict[str, Any]:
+        options: dict[str, Any] = {"impersonate": "chrome", "timeout": 15.0}
+        match cfg.proxy_mode:
+            case ProxyMode.CUSTOM:
+                options["proxies"] = cfg.curl_cffi_proxies
+            case ProxyMode.DIRECT:
+                options["trust_env"] = False
+            case ProxyMode.SYSTEM:
+                options["trust_env"] = True
+        return options
+
+    @classmethod
+    def get_sync_client(cls) -> Session[Response]:
+        return Session[Response](**cls._session_options())
+
+    @classmethod
+    def get_client(cls) -> AsyncSession[Response]:
+        return AsyncSession[Response](**cls._session_options())
+
     @staticmethod
-    def get_client() -> AsyncSession:
-        kwargs = {
-            "impersonate": "chrome",
-            "verify": False,
-            "timeout": 15.0,
-        }
-        
-        if cfg.proxy_mode == "custom":
-            kwargs["proxies"] = cfg.curl_cffi_proxies
-        elif cfg.proxy_mode == "direct":
-            kwargs["trust_env"] = False
-        else: # system
-            kwargs["trust_env"] = True
-            
-        return AsyncSession(**kwargs)
-        
-    _active_domain = None
+    def _mirrors() -> list[str]:
+        return list(dict.fromkeys([cfg.domain, *cfg.backup_domains]))
 
     @classmethod
-    def get_mirrors(cls):
-        return cfg.backup_domains
-
-    @classmethod
-    def get_base_url(cls) -> str:
-        if cls._active_domain:
-            return f"https://{cls._active_domain}"
-        return f"https://{cfg.domain}"
-        
-    @classmethod
-    def switch_domain(cls):
-        with cls._domain_lock:
-            if not cls._active_domain:
-                cls._active_domain = cfg.domain
-            mirrors = cls.get_mirrors()
-            if not mirrors:
-                mirrors = [cfg.domain]
-            if cls._active_domain in mirrors:
-                idx = mirrors.index(cls._active_domain)
-                cls._active_domain = mirrors[(idx + 1) % len(mirrors)]
-            else:
-                cls._active_domain = mirrors[0]
-            logger.warning(f"Switched active domain to {cls._active_domain}")
-
-    @classmethod
-    def fetch_sync(cls, client, path: str, **kwargs):
-        import time
-        for attempt in range(4):
-            base_url = cls.get_base_url()
-            url = f"{base_url}{path}"
+    def fetch_sync(
+        cls,
+        client: Session[Response],
+        path: str,
+        **kwargs: Any,
+    ) -> tuple[Response, str]:
+        failures: list[str] = []
+        for attempt, domain in enumerate(cls._mirrors()):
+            base_url = f"https://{domain}"
             try:
-                resp = client.get(url, **kwargs)
-                resp.raise_for_status()
-                return resp, base_url
-            except Exception as e:
-                logger.warning(f"Fetch failed on {base_url}: {e}")
-                cls.switch_domain()
-                time.sleep(1.0 * (2 ** attempt))
-        raise Exception("All mirror domains failed")
+                response = client.get(f"{base_url}{path}", **kwargs)
+                response.raise_for_status()
+                return response, base_url
+            except Exception as error:
+                failures.append(f"{domain}: {error}")
+                logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))
+                if attempt + 1 < len(cls._mirrors()):
+                    time.sleep(min(2**attempt, 4))
+        raise CrawlError(f"All mirrors failed for {path}: {'; '.join(failures)}")
 
     @classmethod
-    async def fetch(cls, client, path: str, **kwargs):
-        import asyncio
-        for attempt in range(4):
-            base_url = cls.get_base_url()
-            url = f"{base_url}{path}"
+    async def fetch(
+        cls,
+        client: AsyncSession[Response],
+        path: str,
+        **kwargs: Any,
+    ) -> tuple[Response, str]:
+        failures: list[str] = []
+        mirrors = cls._mirrors()
+        for attempt, domain in enumerate(mirrors):
+            base_url = f"https://{domain}"
             try:
-                resp = await client.get(url, **kwargs)
-                resp.raise_for_status()
-                return resp, base_url
-            except Exception as e:
-                logger.warning(f"Fetch failed on {base_url}: {e}")
-                cls.switch_domain()
-                await asyncio.sleep(1.0 * (2 ** attempt))
-        raise Exception("All mirror domains failed")
+                response = await client.get(f"{base_url}{path}", **kwargs)
+                response.raise_for_status()
+                return response, base_url
+            except Exception as error:
+                failures.append(f"{domain}: {error}")
+                logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))
+                if attempt + 1 < len(mirrors):
+                    await asyncio.sleep(min(2**attempt, 4))
+        raise CrawlError(f"All mirrors failed for {path}: {'; '.join(failures)}")
+
+    @staticmethod
+    def _parse_search_html(html: str) -> tuple[list[Comic], int]:
+        soup = BeautifulSoup(html, "html.parser")
+        results: list[Comic] = []
+        for item in soup.select(".gallary_item"):
+            title_element = item.select_one(".title a")
+            if title_element is None:
+                continue
+            link = str(title_element.get("href", ""))
+            aid_match = re.search(r"aid-([A-Za-z0-9_-]+)", link)
+            if aid_match is None:
+                continue
+            image_element = item.select_one("img")
+            cover_url = str(image_element.get("src", "")) if image_element else ""
+            if cover_url.startswith("//"):
+                cover_url = f"https:{cover_url}"
+            info = item.select_one(".info_col")
+            info_text = info.get_text(" ", strip=True) if info else ""
+            picture_match = re.search(r"(\d+)\s*[张張Pp]", info_text)
+            date_match = re.search(r"(\d{4}-\d{2}-\d{2})", info_text)
+            results.append(
+                Comic(
+                    aid=aid_match.group(1),
+                    title=title_element.get_text(strip=True),
+                    cover_url=cover_url,
+                    url=link,
+                    pic_count=f"{picture_match.group(1)}图" if picture_match else "",
+                    date=date_match.group(1) if date_match else "",
+                )
+            )
+
+        max_page = 1
+        paginator = soup.select_one(".f_left.paginator")
+        if paginator:
+            for element in paginator.find_all(["a", "span"]):
+                text = element.get_text(strip=True)
+                if text.isdigit():
+                    max_page = max(max_page, int(text))
+        return results, max_page
 
     @classmethod
     def search_sync(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
-        """
-        同步版本的搜索逻辑，用于后台独立线程，避免多个 asyncio 事件循环导致 curl_cffi 崩溃
-        """
-        encoded_kw = urllib.parse.quote(keyword)
-        
-        results = []
+        direct_aid = cls.gallery_aid(keyword)
+        if direct_aid is not None:
+            return [cls.get_comic_sync(direct_aid)], 1
+        encoded_keyword = urllib.parse.quote(keyword)
+        path = f"/search/index.php?q={encoded_keyword}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}"
         with cls.get_sync_client() as client:
-            resp, base_url = cls.fetch_sync(client, f"/search/index.php?q={encoded_kw}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}")
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            items = soup.select('.gallary_item')
-            for item in items:
-                title_elem = item.select_one('.title a')
-                if not title_elem:
-                    continue
-                title = title_elem.text.strip()
-                link = title_elem.get('href', '')
-                
-                img_elem = item.select_one('img')
-                cover_url = img_elem.get('src', '') if img_elem else ''
-                if cover_url.startswith('//'):
-                    cover_url = 'https:' + cover_url
-                    
-                aid = ""
-                if "aid-" in link:
-                    aid = link.split("aid-")[1].split(".html")[0]
-                    
-                pic_count = ""
-                date = ""
-                info_col = item.select_one('.info_col')
-                if info_col:
-                    text = info_col.text.strip()
-                    m_pic = re.search(r'(\d+)\s*[张張Pp]', text)
-                    if m_pic:
-                        pic_count = f"{m_pic.group(1)}图"
-                    m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
-                    if m_date:
-                        date = m_date.group(1)
-                    
-                results.append(Comic(
-                    aid=aid,
-                    title=title,
-                    cover_url=cover_url,
-                    url=link,
-                    pic_count=pic_count,
-                    date=date
-                ))
-                
-            max_page = 1
-            paginator = soup.select_one('.f_left.paginator')
-            if paginator:
-                for el in paginator.find_all(['a', 'span']):
-                    text = el.text.strip()
-                    if text.isdigit():
-                        max_page = max(max_page, int(text))
-                        
-            return results, max_page
+            response, _base_url = cls.fetch_sync(client, path)
+        return cls._parse_search_html(response.text)
 
     @classmethod
     async def search(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
-        """
-        根据关键字和页码搜索漫画，返回 (结果列表, 当前请求页数（或固定1作为占位）)
-        """
-        encoded_kw = urllib.parse.quote(keyword)
-        
-        results = []
+        direct_aid = cls.gallery_aid(keyword)
+        if direct_aid is not None:
+            return [await asyncio.to_thread(cls.get_comic_sync, direct_aid)], 1
+        encoded_keyword = urllib.parse.quote(keyword)
+        path = f"/search/index.php?q={encoded_keyword}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}"
         async with cls.get_client() as client:
-            resp, base_url = await cls.fetch(client, f"/search/index.php?q={encoded_kw}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}")
-            
-            def parse_html(html):
-                soup = BeautifulSoup(html, 'html.parser')
-                res = []
-                items = soup.select('.gallary_item')
-                for item in items:
-                    title_elem = item.select_one('.title a')
-                    if not title_elem:
-                        continue
-                    title = title_elem.text.strip()
-                    link = title_elem.get('href', '')
-                    
-                    img_elem = item.select_one('img')
-                    cover_url = img_elem.get('src', '') if img_elem else ''
-                    if cover_url.startswith('//'):
-                        cover_url = 'https:' + cover_url
-                        
-                    aid = ""
-                    if "aid-" in link:
-                        aid = link.split("aid-")[1].split(".html")[0]
-                        
-                    pic_count = ""
-                    date = ""
-                    info_col = item.select_one('.info_col')
-                    if info_col:
-                        text = info_col.text.strip()
-                        m_pic = re.search(r'(\d+)\s*[张張Pp]', text)
-                        if m_pic:
-                            pic_count = f"{m_pic.group(1)}图"
-                        m_date = re.search(r'(\d{4}-\d{2}-\d{2})', text)
-                        if m_date:
-                            date = m_date.group(1)
-                        
-                    res.append(Comic(
-                        aid=aid,
-                        title=title,
-                        cover_url=cover_url,
-                        url=link,
-                        pic_count=pic_count,
-                        date=date
-                    ))
-                    
-                m_page = 1
-                paginator = soup.select_one('.f_left.paginator')
-                if paginator:
-                    for el in paginator.find_all(['a', 'span']):
-                        text = el.text.strip()
-                        if text.isdigit():
-                            m_page = max(m_page, int(text))
-                return res, m_page
-                
-            results, max_page = await asyncio.to_thread(parse_html, resp.text)
-            return results, max_page
+            response, _base_url = await cls.fetch(client, path)
+        return await asyncio.to_thread(cls._parse_search_html, response.text)
+
+    @staticmethod
+    def gallery_aid(value: str) -> str | None:
+        """Extract a gallery identifier from a direct gallery URL or plain identifier."""
+        stripped = value.strip()
+        explicit = re.fullmatch(r"aid:\s*([A-Za-z0-9_-]+)", stripped, re.IGNORECASE)
+        if explicit:
+            return explicit.group(1)
+        parsed = urllib.parse.urlsplit(stripped)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        match = re.search(r"(?:aid-|[?&]aid=)([A-Za-z0-9_-]+)", stripped)
+        return match.group(1) if match else None
+
+    @classmethod
+    def get_comic_sync(cls, aid: str) -> Comic:
+        """Resolve enough metadata to enqueue a directly supplied gallery URL."""
+        with cls.get_sync_client() as client:
+            response, base_url = cls.fetch_sync(client, f"/photos-index-page-1-aid-{aid}.html")
+        soup = BeautifulSoup(response.text, "html.parser")
+        heading = soup.select_one("h2") or soup.select_one("title")
+        title = heading.get_text(" ", strip=True) if heading else f"Gallery {aid}"
+        title = re.sub(r"\s*[-|_]\s*紳士漫畫.*$", "", title).strip() or f"Gallery {aid}"
+        count_match = re.search(r"(?:共|總共|总共)?\s*(\d+)\s*[张張Pp]", soup.get_text(" ", strip=True))
+        cover = soup.select_one(".pic_box img")
+        cover_url = urllib.parse.urljoin(base_url, str(cover.get("src", ""))) if cover else ""
+        return Comic(
+            aid=aid,
+            title=title,
+            cover_url=cover_url,
+            url=f"{base_url}/photos-index-aid-{aid}.html",
+            pic_count=f"{count_match.group(1)}图" if count_match else "",
+        )
+
+    @staticmethod
+    def expected_count(pic_count: str) -> int | None:
+        match = re.search(r"\d+", pic_count)
+        return int(match.group()) if match else None
+
+    @staticmethod
+    def _parse_gallery_urls(html: str, base_url: str) -> list[str]:
+        match = re.search(r"var\s+imglist\s*=\s*(\[.*?\]);", html, re.DOTALL)
+        if match is None:
+            return []
+        urls = re.findall(r"url\s*:\s*(?:fast_img_host\+)?\\*['\"](.*?)\\*['\"]", match.group(1))
+        return [f"https:{url}" if url.startswith("//") else urllib.parse.urljoin(base_url, url) for url in urls]
 
     @classmethod
     async def get_all_raw_urls(cls, aid: str) -> list[str]:
-        """尝试通过画廊页一次性获取所有图片的直链"""
         async with cls.get_client() as client:
-            try:
-                resp, base_url = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
-                def parse_gallery(html, base):
-                    import re
-                    import urllib.parse
-                    matches = re.search(r'var\s+imglist\s*=\s*(\[.*?\]);', html, re.DOTALL)
-                    if matches:
-                        urls = re.findall(r'url\s*:\s*(?:fast_img_host\+)?\\*[\'\"](.*?)\\*[\'\"]', matches.group(1))
-                        return [f"https:{u}" if u.startswith('//') else urllib.parse.urljoin(base, u) for u in urls]
-                    return []
-                urls = await asyncio.to_thread(parse_gallery, resp.text, base_url)
-                return urls
-            except Exception as e:
-                logger.error(f"Failed to get gallery for {aid}: {e}")
-                return []
+            response, base_url = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
+        return await asyncio.to_thread(cls._parse_gallery_urls, response.text, base_url)
+
+    @staticmethod
+    def _parse_view_page(html: str, base_url: str) -> tuple[list[str], int]:
+        soup = BeautifulSoup(html, "html.parser")
+        links = [
+            urllib.parse.urljoin(base_url, str(anchor.get("href")))
+            for anchor in soup.select(".pic_box a")
+            if anchor.get("href")
+        ]
+        max_page = 1
+        paginator = soup.select_one(".f_left.paginator")
+        if paginator:
+            for element in paginator.find_all(["a", "span"]):
+                text = element.get_text(strip=True)
+                if text.isdigit():
+                    max_page = max(max_page, int(text))
+        return links, max_page
 
     @classmethod
     async def get_image_view_links(cls, aid: str) -> list[str]:
-        """
-        获取文章页中所有的浏览页(photos-view-id)链接。自动解析分页并抓取所有缩略图链接。
-        """
-        import asyncio
-        view_links = []
-        
         async with cls.get_client() as client:
-            try:
-                resp, base_url = await cls.fetch(client, f"/photos-index-page-1-aid-{aid}.html")
-                
-                def parse_page_1(html):
-                    soup = BeautifulSoup(html, 'html.parser')
-                    links = []
-                    pics = soup.select('.pic_box a')
-                    for pic in pics:
-                        href = pic.get('href')
-                        if href:
-                            links.append(urllib.parse.urljoin(base_url, href))
-                    m_page = 1
-                    paginator = soup.select_one('.f_left.paginator')
-                    if paginator:
-                        for el in paginator.find_all(['a', 'span']):
-                            text = el.text.strip()
-                            if text.isdigit():
-                                m_page = max(m_page, int(text))
-                    return links, m_page
-                    
-                view_links, max_page = await asyncio.to_thread(parse_page_1, resp.text)
-                            
-                if max_page > 1:
-                    sem = asyncio.Semaphore(3) # 限制并发并发抓取页码的连接数
-                    async def fetch_page(page_num: int):
-                        async with sem:
-                            try:
-                                r, _ = await cls.fetch(client, f"/photos-index-page-{page_num}-aid-{aid}.html", timeout=15.0)
-                                def parse_other_page(html):
-                                    p_soup = BeautifulSoup(html, 'html.parser')
-                                    p_pics = p_soup.select('.pic_box a')
-                                    links = []
-                                    for pic in p_pics:
-                                        href = pic.get('href')
-                                        if href:
-                                            links.append(urllib.parse.urljoin(base_url, href))
-                                    return links
-                                links = await asyncio.to_thread(parse_other_page, r.text)
-                                return page_num, links
-                            except Exception as e:
-                                logger.error(f"Failed to fetch page {page_num} of {aid}: {e}")
-                        return page_num, []
+            first_response, base_url = await cls.fetch(client, f"/photos-index-page-1-aid-{aid}.html")
+            first_links, max_page = await asyncio.to_thread(cls._parse_view_page, first_response.text, base_url)
 
-                    async with asyncio.TaskGroup() as tg:
-                        tasks = [tg.create_task(fetch_page(p)) for p in range(2, max_page + 1)]
-                    results = [t.result() for t in tasks]
-                    
-                    # 按页码顺序拼装
-                    results.sort(key=lambda x: x[0])
-                    for _, links in results:
-                        view_links.extend(links)
-                        
-            except Exception as e:
-                logger.error(f"Failed to get image view links: {e}")
-                
-        return view_links
+            async def fetch_page(page_number: int) -> tuple[int, list[str]]:
+                response, _ = await cls.fetch(
+                    client,
+                    f"/photos-index-page-{page_number}-aid-{aid}.html",
+                    timeout=15.0,
+                )
+                links, _ignored = await asyncio.to_thread(cls._parse_view_page, response.text, base_url)
+                if not links:
+                    raise CrawlError(f"Gallery {aid} page {page_number} contained no image links")
+                return page_number, links
+
+            page_results: list[tuple[int, list[str]]] = []
+            async with asyncio.TaskGroup() as task_group:
+                tasks = [task_group.create_task(fetch_page(page)) for page in range(2, max_page + 1)]
+            page_results.extend(task.result() for task in tasks)
+
+        ordered_links = list(first_links)
+        for _page, links in sorted(page_results):
+            ordered_links.extend(links)
+        deduplicated = list(dict.fromkeys(ordered_links))
+        if not deduplicated:
+            raise CrawlError(f"Gallery {aid} contained no image links")
+        return deduplicated
+
+    @staticmethod
+    def _parse_raw_url(html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        image = soup.select_one("#picarea")
+        if image is None:
+            return ""
+        source = str(image.get("src", ""))
+        return f"https:{source}" if source.startswith("//") else source
 
     @classmethod
-    async def get_raw_image_url(cls, view_url: str, client: AsyncSession = None) -> str:
-        """
-        进入浏览页解析真正的原图 URL
-        """
-        async def fetch_img(c):
-            try:
-                from urllib.parse import urlparse
-                path = urlparse(view_url).path
-                if not path.startswith('/'):
-                    path = '/' + path
-                resp, _ = await cls.fetch(c, path, allow_redirects=True, timeout=15.0)
-                
-                def parse_raw(html):
-                    soup = BeautifulSoup(html, 'html.parser')
-                    img_elem = soup.select_one('#picarea')
-                    if img_elem:
-                        src = img_elem.get('src', '')
-                        if src.startswith('//'):
-                            src = 'https:' + src
-                        return src
-                    return ""
-                    
-                src = await asyncio.to_thread(parse_raw, resp.text)
-                if src:
-                    return src
-            except Exception as e:
-                logger.error(f"Failed to get raw image url from {view_url}: {e}")
-            return ""
+    async def get_raw_image_url(
+        cls,
+        view_url: str,
+        client: AsyncSession[Response] | None = None,
+    ) -> str:
+        parsed = urllib.parse.urlparse(view_url)
+        path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
 
-        if client:
-            return await fetch_img(client)
-        else:
-            async with cls.get_client() as c:
-                return await fetch_img(c)
+        async def fetch_url(active_client: AsyncSession[Response]) -> str:
+            response, _ = await cls.fetch(active_client, path, allow_redirects=True, timeout=15.0)
+            return await asyncio.to_thread(cls._parse_raw_url, response.text)
+
+        if client is not None:
+            return await fetch_url(client)
+        async with cls.get_client() as active_client:
+            return await fetch_url(active_client)

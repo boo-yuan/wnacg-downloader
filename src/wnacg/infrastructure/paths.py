@@ -1,3 +1,5 @@
+"""Application data paths and conservative legacy-data migration."""
+
 import os
 import shutil
 import sys
@@ -7,82 +9,56 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DataDirectorySettings(BaseSettings):
-    """Environment-backed override used by packaging and isolated smoke tests."""
+    """Environment-backed override for packaging and isolated tests."""
 
     model_config = SettingsConfigDict(env_prefix="WNACG_", extra="ignore")
 
     data_dir: Path | None = None
 
 
-def get_data_dir() -> Path:
-    settings = DataDirectorySettings()
-    if settings.data_dir is not None:
-        data_dir = settings.data_dir.expanduser().resolve()
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir
-
-    # 按照系统规范，数据默认保存在系统应用数据目录
+def _default_data_dir() -> Path:
     if os.name == "nt":
-        appdata_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
-        data_dir = Path(appdata_base) / "wnacg-downloader"
-    else:
-        data_dir = Path(os.path.expanduser("~")) / ".wnacg-downloader"
+        appdata_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        return Path(appdata_base) / "wnacg-downloader" if appdata_base else Path.home() / "wnacg-downloader"
+    return Path.home() / ".local" / "share" / "wnacg-downloader"
 
+
+def _copy_missing(source: Path, destination: Path, warnings: list[str]) -> None:
+    """Copy only absent legacy entries, leaving the source as a recoverable backup."""
+    if not source.is_dir() or source.resolve(strict=False) == destination.resolve(strict=False):
+        return
+    try:
+        for item in source.iterdir():
+            target = destination / item.name
+            if target.exists():
+                warnings.append(f"Legacy item retained because destination exists: {item}")
+            elif item.is_file():
+                shutil.copy2(item, target)
+            elif item.is_dir():
+                shutil.copytree(item, target)
+    except OSError as error:
+        warnings.append(f"Legacy migration from {source} failed: {error}")
+
+
+def initialize_data_dir() -> tuple[Path, tuple[str, ...]]:
+    """Create the configured data directory and non-destructively copy legacy data."""
+    settings = DataDirectorySettings()
+    data_dir = (settings.data_dir or _default_data_dir()).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # 尝试恢复刚才可能被备份的 AppData 数据 (被改名为 _bak 的目录)
-    bak_appdata = Path(str(data_dir) + "_bak")
-    if bak_appdata.exists() and bak_appdata.is_dir():
+    warnings: list[str] = []
+    application_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parents[3]
+    _copy_missing(Path(f"{data_dir}_bak"), data_dir, warnings)
+    _copy_missing(application_dir / "data", data_dir, warnings)
+
+    old_log = application_dir / "app.log"
+    current_log = data_dir / "app.jsonl"
+    if old_log.is_file() and not current_log.exists():
         try:
-            for item in bak_appdata.iterdir():
-                dest = data_dir / item.name
-                if not dest.exists():
-                    if item.is_file():
-                        shutil.copy2(item, dest)
-                    elif item.is_dir():
-                        shutil.copytree(item, dest)
-            # 恢复后清除备份
-            shutil.rmtree(bak_appdata, ignore_errors=True)
-        except Exception:
-            pass
-
-    # 如果有在本地目录（便携模式）产生的数据，也无缝迁移回系统目录
-    local_base = (
-        Path(sys.executable).parent
-        if getattr(sys, "frozen", False)
-        else Path(__file__).parent.parent.parent
-    )
-
-    local_data = local_base / "data"
-    if local_data.exists() and local_data.is_dir():
-        try:
-            for item in local_data.iterdir():
-                dest = data_dir / item.name
-                if not dest.exists():
-                    if item.is_file():
-                        shutil.copy2(item, dest)
-                    elif item.is_dir():
-                        shutil.copytree(item, dest)
-            # 迁移后将本地 data 目录重命名为 .bak，避免冲突
-            local_bak = Path(str(local_data) + "_bak")
-            if local_bak.exists():
-                shutil.rmtree(local_bak, ignore_errors=True)
-            local_data.rename(local_bak)
-        except Exception:
-            pass
-
-    # 兼容老版本在根目录的 app.log
-    old_log = local_base / "app.log"
-    if old_log.exists() and old_log.is_file():
-        try:
-            dest = data_dir / "app.log"
-            if not dest.exists():
-                shutil.copy2(old_log, dest)
-            old_log.unlink()
-        except Exception:
-            pass
-
-    return data_dir
+            shutil.copy2(old_log, data_dir / "legacy-app.log")
+        except OSError as error:
+            warnings.append(f"Legacy log migration failed: {error}")
+    return data_dir, tuple(warnings)
 
 
-DATA_DIR = get_data_dir()
+DATA_DIR, PATH_MIGRATION_WARNINGS = initialize_data_dir()

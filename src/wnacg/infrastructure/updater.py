@@ -1,71 +1,104 @@
-from curl_cffi.requests import AsyncSession
+"""Authenticated update metadata checks against the official GitHub API."""
 
-from wnacg.infrastructure.logger import logger
+import json
+from importlib.metadata import PackageNotFoundError, version
+from urllib.parse import urlsplit
+
+from curl_cffi.requests import AsyncSession, Response
+from packaging.version import Version
+from pydantic import BaseModel, ConfigDict, Field
+
+from wnacg.infrastructure.config import ProxyMode, cfg
+
+
+class GitHubRelease(BaseModel):
+    """Validated subset of GitHub's latest-release response."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tag_name: str = Field(min_length=1, max_length=128)
+    body: str = Field(default="", max_length=200_000)
+    html_url: str = Field(min_length=1, max_length=4_096)
+
+
+class UpdateResult(BaseModel):
+    """Safe update information consumed by the UI."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    has_update: bool
+    current_version: str
+    latest_version: str
+    release_notes: str
+    download_url: str
+
+
+class UpdateCheckError(RuntimeError):
+    """Raised when update status cannot be determined."""
 
 
 class Updater:
-    REPO = "boo-yuan/wnacg-downloader"
-    CURRENT_VERSION = "v1.0.0"
-    API_MIRRORS = [
-        "https://api.kkgithub.com/repos/{repo}/releases/latest",
-        "https://api.github.com/repos/{repo}/releases/latest"
-    ]
-    
-    @classmethod
-    async def check_update(cls) -> dict:
-        """
-        Returns a dict: {"has_update": bool, "latest_version": str, "release_notes": str, "download_url": str}
-        """
-        from wnacg.infrastructure.config import cfg
-        kwargs = {
-            "impersonate": "chrome",
-            "verify": False,
-        }
-        if cfg.proxy_mode == "custom":
-            kwargs["proxies"] = cfg.curl_cffi_proxies
-        elif cfg.proxy_mode == "direct":
-            kwargs["trust_env"] = False
-        else: # system
-            kwargs["trust_env"] = True
-            
-        async with AsyncSession(**kwargs) as client:
-            for mirror in cls.API_MIRRORS:
-                url = mirror.format(repo=cls.REPO)
-                try:
-                    resp = await client.get(url, timeout=10.0)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        latest_tag = data.get("tag_name", "")
-                        body = data.get("body", "")
-                        
-                        assets = data.get("assets", [])
-                        download_url = ""
-                        for asset in assets:
-                            name = asset.get("name", "")
-                            if name.endswith(".zip") or name.endswith(".exe") or name == "WNACG-Downloader":
-                                download_url = asset.get("browser_download_url", "")
-                                break
-                                
-                        if not download_url and data.get("html_url"):
-                            download_url = data.get("html_url")
-                            
-                        # 使用 kkgithub 镜像加速下载
-                        if download_url and "github.com" in download_url:
-                            download_url = download_url.replace("github.com", "kkgithub.com")
-                            
-                        has_update = False
-                        if latest_tag:
-                            from packaging.version import parse
-                            has_update = parse(latest_tag) > parse(cls.CURRENT_VERSION)
-                        
-                        return {
-                            "has_update": has_update,
-                            "latest_version": latest_tag,
-                            "release_notes": body,
-                            "download_url": download_url
-                        }
-                except Exception as e:
-                    logger.warning(f"Failed to check update via {mirror}: {e}")
-                    
-        return {"has_update": False, "latest_version": cls.CURRENT_VERSION, "release_notes": "", "download_url": ""}
+    """Check official release metadata without downloading executable code."""
 
+    REPOSITORY = "boo-yuan/wnacg-downloader"
+    API_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+    RELEASE_PATH_PREFIX = f"/{REPOSITORY}/releases/"
+
+    @staticmethod
+    def current_version() -> str:
+        """Read the installed project version from package metadata."""
+        try:
+            return version("wnacg-downloader")
+        except PackageNotFoundError as error:
+            raise UpdateCheckError("Package metadata is unavailable") from error
+
+    @classmethod
+    async def check_update(cls) -> UpdateResult:
+        """Return validated metadata from the official GitHub release page."""
+        match cfg.proxy_mode:
+            case ProxyMode.CUSTOM:
+                session = AsyncSession[Response](
+                    impersonate="chrome",
+                    timeout=15.0,
+                    proxy=cfg.custom_proxy,
+                )
+            case ProxyMode.DIRECT:
+                session = AsyncSession[Response](impersonate="chrome", timeout=15.0, trust_env=False)
+            case ProxyMode.SYSTEM:
+                session = AsyncSession[Response](impersonate="chrome", timeout=15.0, trust_env=True)
+
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        try:
+            async with session as client:
+                response: Response = await client.get(cls.API_URL, headers=headers)
+                response.raise_for_status()
+                release_payload: object = json.loads(response.text)
+                release = GitHubRelease.model_validate(release_payload)
+        except Exception as error:
+            raise UpdateCheckError(f"GitHub update check failed: {error}") from error
+
+        release_url = urlsplit(release.html_url)
+        if (
+            release_url.scheme != "https"
+            or release_url.hostname != "github.com"
+            or not release_url.path.startswith(cls.RELEASE_PATH_PREFIX)
+        ):
+            raise UpdateCheckError("GitHub returned an unexpected release URL")
+
+        current_version = cls.current_version()
+        latest_version = release.tag_name.removeprefix("v")
+        try:
+            has_update = Version(latest_version) > Version(current_version)
+        except ValueError as error:
+            raise UpdateCheckError(f"Invalid release version: {release.tag_name}") from error
+
+        return UpdateResult(
+            has_update=has_update,
+            current_version=current_version,
+            latest_version=release.tag_name,
+            release_notes=release.body,
+            download_url=release.html_url,
+        )

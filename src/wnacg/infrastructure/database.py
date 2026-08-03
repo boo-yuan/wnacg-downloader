@@ -1,26 +1,26 @@
 """SQLite persistence adapter for download tasks and image progress."""
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import closing, contextmanager
-from typing import TypedDict
+from pathlib import Path
 
-from wnacg.domain.models import Comic, DownloadTask, TaskStatus
+from pydantic import ValidationError
+
+from wnacg.application.ports import ImageRecord
+from wnacg.domain.models import (
+    Comic,
+    DownloadOptions,
+    DownloadTask,
+    TaskStatus,
+    validate_status_transition,
+)
+from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.paths import DATA_DIR
 
 DATABASE_PATH = DATA_DIR / "tasks.db"
 _BUSY_TIMEOUT_MILLISECONDS = 30_000
-_SCHEMA_VERSION = 2
-
-
-class ImageRecord(TypedDict):
-    """Persisted state for one image in a download task."""
-
-    task_id: str
-    image_index: int
-    view_url: str
-    raw_url: str
-    status: str
+_SCHEMA_VERSION = 3
 
 
 def _connect() -> sqlite3.Connection:
@@ -33,7 +33,7 @@ def _connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction() -> Generator[sqlite3.Connection]:
     """Yield a connection and commit or roll back the transaction atomically."""
     with closing(_connect()) as connection, connection:
         yield connection
@@ -64,6 +64,8 @@ def initialize_database() -> None:
                 total_images INTEGER NOT NULL,
                 downloaded_images INTEGER NOT NULL,
                 save_path TEXT NOT NULL,
+                download_root TEXT NOT NULL DEFAULT '',
+                options_json TEXT,
                 error_message TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -88,12 +90,26 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE tasks ADD COLUMN pic_count TEXT NOT NULL DEFAULT ''")
         if "date" not in legacy_task_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN date TEXT NOT NULL DEFAULT ''")
+        if "download_root" not in legacy_task_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN download_root TEXT NOT NULL DEFAULT ''")
+        if "options_json" not in legacy_task_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN options_json TEXT")
 
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_aid ON tasks(aid)")
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 def _task_from_row(row: sqlite3.Row) -> DownloadTask:
+    save_path = str(row["save_path"])
+    download_root = str(row["download_root"] or "")
+    if not download_root and save_path:
+        download_root = str(Path(save_path).parent)
+    options_json = row["options_json"]
+    try:
+        options = DownloadOptions.model_validate_json(options_json) if options_json else None
+    except ValidationError as error:
+        logger.warning("Ignoring invalid persisted download options", task_id=str(row["id"]), error=str(error))
+        options = None
     comic = Comic(
         aid=str(row["aid"]),
         title=str(row["title"]),
@@ -109,7 +125,9 @@ def _task_from_row(row: sqlite3.Row) -> DownloadTask:
         progress=float(row["progress"]),
         total_images=int(row["total_images"]),
         downloaded_images=int(row["downloaded_images"]),
-        save_path=str(row["save_path"]),
+        save_path=save_path,
+        download_root=download_root,
+        options=options,
         error_message=row["error_message"],
     )
 
@@ -121,9 +139,10 @@ def save_task(task: DownloadTask) -> None:
             """
             INSERT INTO tasks (
                 id, aid, title, cover_url, url, pic_count, date, status, progress,
-                total_images, downloaded_images, save_path, error_message
+                total_images, downloaded_images, save_path, download_root,
+                options_json, error_message
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 aid = excluded.aid,
                 title = excluded.title,
@@ -136,6 +155,8 @@ def save_task(task: DownloadTask) -> None:
                 total_images = excluded.total_images,
                 downloaded_images = excluded.downloaded_images,
                 save_path = excluded.save_path,
+                download_root = excluded.download_root,
+                options_json = excluded.options_json,
                 error_message = excluded.error_message
             """,
             (
@@ -151,6 +172,8 @@ def save_task(task: DownloadTask) -> None:
                 task.total_images,
                 task.downloaded_images,
                 task.save_path,
+                task.download_root,
+                task.options.model_dump_json() if task.options is not None else None,
                 task.error_message,
             ),
         )
@@ -187,6 +210,10 @@ def update_task_status(
 ) -> None:
     """Persist a task status and its optional failure message."""
     with _transaction() as connection:
+        row = connection.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return
+        validate_status_transition(TaskStatus(str(row["status"])), status)
         connection.execute(
             "UPDATE tasks SET status = ?, error_message = ? WHERE id = ?",
             (status.value, error_message, task_id),
@@ -287,4 +314,22 @@ def update_image_status(task_id: str, image_index: int, status: str) -> None:
         )
 
 
-initialize_database()
+class SQLiteTaskRepository:
+    """Concrete SQLite adapter implementing the application persistence port."""
+
+    save_task = staticmethod(save_task)
+    get_all_tasks = staticmethod(get_all_tasks)
+    get_task = staticmethod(get_task)
+    get_task_by_aid = staticmethod(get_task_by_aid)
+    update_task_status = staticmethod(update_task_status)
+    update_task_progress = staticmethod(update_task_progress)
+    delete_task = staticmethod(delete_task)
+    reset_downloading_tasks = staticmethod(reset_downloading_tasks)
+    save_view_links = staticmethod(save_view_links)
+    save_raw_links = staticmethod(save_raw_links)
+    get_images = staticmethod(get_images)
+    update_image_raw_url = staticmethod(update_image_raw_url)
+    update_image_status = staticmethod(update_image_status)
+
+
+task_repository = SQLiteTaskRepository()

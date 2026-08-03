@@ -16,9 +16,6 @@ dependencies = [
     "curl-cffi>=0.15.0",
     "pillow>=12.3.0",
     "packaging>=25.0",
-    "qasync>=0.28.0",
-    "sqlmodel>=0.0.39",
-    "aiosqlite>=0.22.1",
 ]
 
 [project.gui-scripts]
@@ -45,10 +42,35 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.3.0",
+    "pyright>=1.1.403",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-cov>=6.2.1",
     "ruff>=0.12.0",
 ]
 build = [
     "pyinstaller>=6.0.0",
 ]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["src"]
+strict = [
+    "src/wnacg/domain",
+    "src/wnacg/application",
+    "src/wnacg/infrastructure/config.py",
+    "src/wnacg/infrastructure/crawler.py",
+    "src/wnacg/infrastructure/database.py",
+    "src/wnacg/infrastructure/paths.py",
+    "src/wnacg/infrastructure/updater.py",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["wnacg"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

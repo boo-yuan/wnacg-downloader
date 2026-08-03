@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+      - name: Ruff
+        run: uv run --locked ruff check .
+      - name: Format check
+        run: uv run --locked ruff format --check .
+      - name: Pyright
+        run: uv run --locked pyright
+      - name: Tests
+        run: uv run --locked pytest --cov --cov-report=term-missing
+      - name: Smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          WNACG_DATA_DIR: ${{ runner.temp }}\wnacg-smoke
+        run: uv run --locked python -m wnacg --smoke-test

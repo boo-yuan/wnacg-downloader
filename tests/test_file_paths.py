@@ -1,0 +1,45 @@
+from pathlib import Path
+
+import pytest
+
+from wnacg.application.file_paths import (
+    archive_path,
+    image_base_name,
+    safe_component,
+    task_directory,
+    validated_task_directory,
+)
+
+
+def test_task_directory_is_unique_and_safe(tmp_path: Path) -> None:
+    first = task_directory(tmp_path, "A/B:*?", "100")
+    second = task_directory(tmp_path, "A/B:*?", "101")
+    assert first != second
+    assert first.parent == tmp_path.resolve()
+    assert first.name.endswith("[100]")
+
+
+def test_image_original_name_keeps_sequence_to_avoid_collision() -> None:
+    assert image_base_name(0, "https://a.test/path/same.jpg", "original", 2) == "0001-same"
+    assert image_base_name(1, "https://b.test/other/same.png", "original", 2) == "0002-same"
+
+
+def test_archive_path_preserves_dots() -> None:
+    source = Path("root/title.v2 [42]")
+    assert archive_path(source) == Path("root/title.v2 [42].zip")
+
+
+def test_destructive_path_must_be_direct_child(tmp_path: Path) -> None:
+    root = tmp_path / "downloads"
+    valid = root / "comic [1]"
+    assert validated_task_directory(valid, root) == valid.resolve()
+    with pytest.raises(ValueError):
+        validated_task_directory(root, root)
+    with pytest.raises(ValueError):
+        validated_task_directory(root / "nested" / "comic", root)
+
+
+@pytest.mark.parametrize("value", ["CON", "..", 'a<b>c:"'])
+def test_safe_component_rejects_problematic_names(value: str) -> None:
+    result = safe_component(value, "fallback")
+    assert result not in {"", ".", "..", "CON"}

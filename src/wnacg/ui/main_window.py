@@ -1,3 +1,6 @@
+"""Main Fluent window, tray integration, and close behavior."""
+
+import contextlib
 import os
 
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
@@ -15,31 +18,6 @@ from qfluentwidgets import FluentIcon as FIF
 
 from wnacg.application.downloader import downloader_manager
 from wnacg.infrastructure.config import cfg
-
-
-class ClosePromptDialog(MessageBoxBase):
-    def __init__(self, active_count=0, parent=None):
-        super().__init__(parent)
-        self.titleLabel = SubtitleLabel("确认关闭", self)
-        self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
-        
-        if active_count > 0:
-            text = f"⚠️ 注意：还有 {active_count} 个任务正在下载！\n彻底退出会中断下载。\n\n建议您选择“最小化到托盘”，让它在后台默默下载。"
-            self.contentLabel = BodyLabel(text, self)
-            self.contentLabel.setStyleSheet("color: #d9534f; font-weight: bold;")
-        else:
-            self.contentLabel = BodyLabel("要彻底退出软件，还是隐藏到后台系统托盘？", self)
-        
-        self.viewLayout.addWidget(self.titleLabel)
-        self.viewLayout.addWidget(self.contentLabel)
-        self.viewLayout.addWidget(self.checkbox)
-        
-        self.viewLayout.setSpacing(12)
-        self.viewLayout.setContentsMargins(24, 24, 24, 24)
-        
-        self.yesButton.setText("最小化到托盘")
-        self.cancelButton.setText("彻底退出")
-
 from wnacg.ui.views.download_interface import DownloadInterface
 from wnacg.ui.views.home_interface import HomeInterface
 from wnacg.ui.views.setting_interface import (
@@ -49,153 +27,179 @@ from wnacg.ui.views.setting_interface import (
 )
 
 
+class ClosePromptDialog(MessageBoxBase):
+    def __init__(self, active_count=0, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel("确认关闭", self)
+        self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
+
+        if active_count > 0:
+            text = (
+                f"⚠️ 注意：还有 {active_count} 个任务正在下载！\n彻底退出会中断下载。\n\n"
+                "建议您选择“最小化到托盘”，让它在后台默默下载。"
+            )
+            self.contentLabel = BodyLabel(text, self)
+            self.contentLabel.setStyleSheet("color: #d9534f; font-weight: bold;")
+        else:
+            self.contentLabel = BodyLabel("要彻底退出软件，还是隐藏到后台系统托盘？", self)
+
+        self.viewLayout.addWidget(self.titleLabel)
+        self.viewLayout.addWidget(self.contentLabel)
+        self.viewLayout.addWidget(self.checkbox)
+
+        self.viewLayout.setSpacing(12)
+        self.viewLayout.setContentsMargins(24, 24, 24, 24)
+
+        self.yesButton.setText("最小化到托盘")
+        self.cancelButton.setText("彻底退出")
+
+
 class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
         self.initWindow()
-        
+
         # 初始化子页面
         self.homeInterface = HomeInterface(self)
         self.downloadInterface = DownloadInterface(self)
         self.networkSettingInterface = NetworkSettingInterface(self)
         self.downloadSettingInterface = DownloadSettingInterface(self)
         self.aboutSettingInterface = AboutSettingInterface(self)
-        
+
         self.initNavigation()
         self._init_tray()
         downloader_manager.signals.speed_update.connect(self._update_speed_title)
-        
+
     def _update_speed_title(self, speed_str):
         if speed_str:
-            self.setWindowTitle(f'WNACG Downloader - {speed_str}')
+            self.setWindowTitle(f"WNACG Downloader - {speed_str}")
         else:
-            self.setWindowTitle('WNACG Downloader')
-        
+            self.setWindowTitle("WNACG Downloader")
+
     def changeEvent(self, event):
         from PySide6.QtCore import QEvent
+
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             for card in self.homeInterface.card_map.values():
                 card.update_download_state()
         super().changeEvent(event)
-        
+
     def initNavigation(self):
-        self.addSubInterface(self.homeInterface, FIF.HOME, '漫画列表')
-        self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, '任务列队')
-        
+        self.addSubInterface(self.homeInterface, FIF.HOME, "漫画列表")
+        self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, "任务列队")
+
         # 将设置页放置于导航栏底部
-        self.addSubInterface(
-            self.networkSettingInterface, FIF.GLOBE, '网络代理')
-        self.addSubInterface(
-            self.downloadSettingInterface, FIF.SETTING, '下载设置')
-        self.addSubInterface(
-            self.aboutSettingInterface, FIF.INFO, '系统关于')
-            
+        self.addSubInterface(self.networkSettingInterface, FIF.GLOBE, "网络代理")
+        self.addSubInterface(self.downloadSettingInterface, FIF.SETTING, "下载设置")
+        self.addSubInterface(self.aboutSettingInterface, FIF.INFO, "系统关于")
+
         try:
             self.navigationInterface.setExpandWidth(220)
             from qfluentwidgets import setFont
+
             setFont(self.navigationInterface, 11)
         except Exception:
             pass
-            
+
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
         if item:
             self.downloadBadge = None
-            
+
         downloader_manager.signals.badge_update.connect(self._update_badge)
-        
+
     def _update_badge(self, count):
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
-        if not item: return
-        
+        if not item:
+            return
+
         if count > 0:
-            if not hasattr(self, 'downloadBadge') or not self.downloadBadge:
+            if not hasattr(self, "downloadBadge") or not self.downloadBadge:
                 self.downloadBadge = InfoBadge.error(
-                    count, 
-                    parent=item.parent(), 
-                    target=item, 
-                    position=InfoBadgePosition.NAVIGATION_ITEM
+                    count, parent=item.parent(), target=item, position=InfoBadgePosition.NAVIGATION_ITEM
                 )
             self.downloadBadge.setText(str(count))
             self.downloadBadge.adjustSize()
             self.downloadBadge.show()
         else:
-            if hasattr(self, 'downloadBadge') and self.downloadBadge:
+            if hasattr(self, "downloadBadge") and self.downloadBadge:
                 self.downloadBadge.deleteLater()
                 self.downloadBadge = None
-            
-        if not hasattr(self, '_previous_count'):
+
+        if not hasattr(self, "_previous_count"):
             self._previous_count = 0
-            
+
         self._previous_count = count
-            
+
     def initWindow(self):
         self.resize(1060, 960)
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
-        self.setWindowTitle('WNACG Downloader')
-        
+        self.setWindowTitle("WNACG Downloader")
+
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resource", "icon.png")
         self.setWindowIcon(QIcon(icon_path))
-        
+
         desktop = self.screen().availableGeometry()
         w, h = desktop.width(), desktop.height()
-        self.move(w//2 - self.width()//2, h//2 - self.height()//2)
+        self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
 
     def _init_tray(self):
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resource", "icon.png")
         self.trayIcon = QSystemTrayIcon(self)
         self.trayIcon.setIcon(QIcon(icon_path))
-        
+
         self.trayMenu = QMenu(self)
         self.showAction = QAction("显示主界面", self)
         self.showAction.triggered.connect(self._show_window)
         self.quitAction = QAction("彻底退出", self)
         self.quitAction.triggered.connect(self._force_quit)
-        
+
         self.trayMenu.addAction(self.showAction)
         self.trayMenu.addSeparator()
         self.trayMenu.addAction(self.quitAction)
-        
+
         self.trayIcon.setContextMenu(self.trayMenu)
         self.trayIcon.activated.connect(self._on_tray_activated)
         self.trayIcon.show()
 
         downloader_manager.signals.task_status_changed.connect(self._on_task_status_for_tray)
-        
+
     def _on_task_status_for_tray(self, task_id, status):
         from wnacg.domain.models import TaskStatus
-        from wnacg.infrastructure import database as db
+        from wnacg.infrastructure.database import task_repository as db
+
         if status == TaskStatus.COMPLETED:
             tasks = db.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
-            
+
             if active_count == 0:
                 from PySide6.QtCore import Qt
                 from qfluentwidgets import InfoBar, InfoBarPosition
+
                 InfoBar.success(
                     title="🎉 下载大满贯！",
                     content="队列里的漫画全都下完啦，快去欣赏吧。",
-                    orient=Qt.Horizontal,
+                    orient=Qt.Orientation.Horizontal,
                     isClosable=True,
                     position=InfoBarPosition.TOP_RIGHT,
                     duration=5000,
-                    parent=self
+                    parent=self,
                 )
                 if self.isHidden() or self.isMinimized():
                     self.trayIcon.showMessage(
-                        "🎉 任务全部完成", 
+                        "🎉 任务全部完成",
                         "您挂机的下载队列已经全部搞定！",
-                        QSystemTrayIcon.MessageIcon.Information, 
-                        3000
+                        QSystemTrayIcon.MessageIcon.Information,
+                        3000,
                     )
             elif self.isHidden() or self.isMinimized():
                 task = db.get_task(task_id)
                 if task:
                     self.trayIcon.showMessage(
-                        "✅ 单本下载成功", 
+                        "✅ 单本下载成功",
                         f"《{task.comic.title}》已经下好啦，躺在硬盘里等您翻阅。",
-                        QSystemTrayIcon.MessageIcon.Information, 
-                        3000
+                        QSystemTrayIcon.MessageIcon.Information,
+                        3000,
                     )
 
     def _show_window(self):
@@ -208,61 +212,53 @@ class MainWindow(FluentWindow):
                 self._show_window()
             else:
                 self.hide()
-                
+
     def _force_quit(self):
         self.trayIcon.hide()
         from PySide6.QtWidgets import QApplication
+
         QApplication.quit()
-        
+
     def closeEvent(self, e: QCloseEvent):
         if cfg.show_close_prompt:
             from wnacg.domain.models import TaskStatus
-            from wnacg.infrastructure import database as db
+            from wnacg.infrastructure.database import task_repository as db
+
             tasks = db.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
-            
+
             w = ClosePromptDialog(active_count, self.window())
             if w.exec():
                 if w.checkbox.isChecked():
                     cfg.show_close_prompt = False
                     cfg.close_to_tray = True
                     cfg.save()
-                    
+
                     # Update settings UI if we can
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.aboutSettingInterface.closeActionCard.comboBox.setCurrentIndex(1)
-                    except:
-                        pass
-                
+
                 e.ignore()
                 self.hide()
                 self.trayIcon.showMessage(
-                    "已最小化到托盘",
-                    "WNACG Downloader 将在后台继续运行",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2000
+                    "已最小化到托盘", "WNACG Downloader 将在后台继续运行", QSystemTrayIcon.MessageIcon.Information, 2000
                 )
             else:
                 if w.checkbox.isChecked():
                     cfg.show_close_prompt = False
                     cfg.close_to_tray = False
                     cfg.save()
-                    
-                    try:
+
+                    with contextlib.suppress(RuntimeError):
                         self.aboutSettingInterface.closeActionCard.comboBox.setCurrentIndex(2)
-                    except:
-                        pass
-                        
+
                 self._force_quit()
         else:
             if cfg.close_to_tray:
                 e.ignore()
                 self.hide()
                 self.trayIcon.showMessage(
-                    "已最小化到托盘",
-                    "WNACG Downloader 将在后台继续运行",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2000
+                    "已最小化到托盘", "WNACG Downloader 将在后台继续运行", QSystemTrayIcon.MessageIcon.Information, 2000
                 )
             else:
                 self._force_quit()

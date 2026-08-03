@@ -1,72 +1,167 @@
+"""Validated application configuration persisted as atomic JSON."""
+
 import json
-from enum import Enum
+import shutil
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from loguru import logger
+from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from wnacg.domain.models import DownloadFormat, DownloadNaming
 from wnacg.infrastructure.paths import DATA_DIR
 
 CONFIG_FILE = DATA_DIR / "config.json"
 
-class ProxyMode(str, Enum):
+
+class ProxyMode(StrEnum):
+    """Network proxy selection."""
+
     DIRECT = "direct"
     SYSTEM = "system"
     CUSTOM = "custom"
 
+
 class AppConfig(BaseSettings):
-    proxy_mode: ProxyMode = Field(default=ProxyMode.SYSTEM, description="默认代理模式")
-    custom_proxy: str = Field(default="http://127.0.0.1:7890", description="自定义代理地址")
-    download_dir: str = Field(default=str(Path.home() / "Downloads" / "wnacg"), description="默认下载保存路径")
-    domain: str = Field(default="www.wnacg.com", description="WNACG主域名")
-    backup_domains: list[str] = Field(default=["www.wnacg.com", "www.wnacg.ru"], description="缓存的备用域名列表")
-    download_naming: str = Field(default="original", description="下载命名方式：original / sequential")
-    download_format: str = Field(default="jpg", description="下载格式：original / jpg / png / webp")
-    auto_start_download: bool = Field(default=True, description="加入下载队列后是否立即下载")
-    max_concurrent_tasks: int = Field(default=2, description="同时下载的最大任务数")
-    global_max_connections: int = Field(default=8, description="全局最大并发下载连接数")
-    download_delay: float = Field(default=1.0, description="每张图片下载间的延迟(秒)")
-    pack_to_zip: bool = Field(default=False, description="下载完成后是否自动打包为ZIP")
-    delete_original_after_pack: bool = Field(default=False, description="打包完成后是否删除原文件夹")
-    close_to_tray: bool = Field(default=True, description="关闭主窗口时是否最小化到托盘")
-    show_close_prompt: bool = Field(default=True, description="关闭窗口时是否显示确认弹窗")
-    show_cancel_prompt: bool = Field(default=True, description="取消任务时是否显示确认弹窗")
-    delete_files_on_cancel: bool = Field(default=False, description="取消任务时是否默认删除文件")
-    global_speed_limit: int = Field(default=0, description="全局下载限速 (KB/s)，0为不限速")
+    """Strict settings loaded from JSON and optional ``WNACG_`` environment values."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="WNACG_",
+        extra="ignore",
+        validate_assignment=True,
+    )
+
+    proxy_mode: ProxyMode = ProxyMode.SYSTEM
+    custom_proxy: str = "http://127.0.0.1:7890"
+    download_dir: str = str(Path.home() / "Downloads" / "wnacg")
+    domain: str = "www.wnacg.com"
+    backup_domains: list[str] = Field(default_factory=lambda: ["www.wnacg.com", "www.wnacg.ru"])
+    download_naming: DownloadNaming = DownloadNaming.ORIGINAL
+    download_format: DownloadFormat = DownloadFormat.JPG
+    auto_start_download: bool = True
+    max_concurrent_tasks: int = Field(default=2, ge=1, le=10)
+    global_max_connections: int = Field(default=8, ge=1, le=64)
+    download_delay: float = Field(default=1.0, ge=0.0, le=60.0)
+    pack_to_zip: bool = False
+    delete_original_after_pack: bool = False
+    close_to_tray: bool = True
+    show_close_prompt: bool = True
+    show_cancel_prompt: bool = True
+    delete_files_on_cancel: bool = False
+    global_speed_limit: int = Field(default=0, ge=0, le=10_000_000)
+    max_image_bytes: int = Field(default=100 * 1024 * 1024, ge=1024 * 1024, le=1024 * 1024 * 1024)
+
+    @field_validator("download_dir")
+    @classmethod
+    def validate_download_dir(cls, value: str) -> str:
+        path = Path(value).expanduser()
+        if not str(path).strip():
+            raise ValueError("download_dir cannot be empty")
+        return str(path)
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, value: str) -> str:
+        normalized = value.strip().lower().rstrip(".")
+        parsed = urlsplit(f"//{normalized}")
+        if (
+            not normalized
+            or parsed.hostname != normalized
+            or parsed.port is not None
+            or "/" in normalized
+            or "@" in normalized
+        ):
+            raise ValueError("domain must be a hostname without scheme, path, credentials, or port")
+        return normalized
+
+    @field_validator("backup_domains")
+    @classmethod
+    def validate_backup_domains(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            domain = cls.validate_domain(value)
+            if domain not in normalized:
+                normalized.append(domain)
+        if not normalized:
+            raise ValueError("at least one backup domain is required")
+        return normalized
+
+    @field_validator("custom_proxy")
+    @classmethod
+    def validate_custom_proxy(cls, value: str) -> str:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https", "socks4", "socks5"} or parsed.hostname is None:
+            raise ValueError("custom_proxy must be an HTTP(S) or SOCKS proxy URL")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def include_primary_domain(self) -> "AppConfig":
+        if self.domain not in self.backup_domains:
+            self.backup_domains.insert(0, self.domain)
+        return self
 
     @property
-    def curl_cffi_proxies(self) -> dict | None:
-        """根据当前模式返回给 curl_cffi 的 proxies 参数"""
-        if self.proxy_mode == ProxyMode.CUSTOM:
+    def curl_cffi_proxies(self) -> dict[str, str] | None:
+        if self.proxy_mode is ProxyMode.CUSTOM:
             return {"http": self.custom_proxy, "https": self.custom_proxy}
-        return None  # DIRECT 和 SYSTEM 可以在外部逻辑中通过不传递 proxies 来处理
+        return None
 
     def save(self) -> None:
-        """持久化保存配置到本地 JSON 文件 (原子写入)"""
-        temp_file = CONFIG_FILE.with_suffix(".tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            f.write(self.model_dump_json(indent=4))
-        temp_file.replace(CONFIG_FILE)
+        """Persist settings with same-directory atomic replacement."""
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary_file = CONFIG_FILE.with_suffix(".tmp")
+        temporary_file.write_text(self.model_dump_json(indent=4), encoding="utf-8")
+        temporary_file.replace(CONFIG_FILE)
+
+
+def _backup_invalid_config() -> None:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup_file = CONFIG_FILE.with_name(f"config.invalid-{timestamp}.json")
+    shutil.copy2(CONFIG_FILE, backup_file)
+
+
+def _recover_valid_fields(data: dict[str, object]) -> AppConfig:
+    recovered: dict[str, object] = {}
+    for field_name in AppConfig.model_fields:
+        if field_name not in data:
+            continue
+        try:
+            candidate = AppConfig.model_validate({field_name: data[field_name]})
+        except Exception as error:
+            logger.warning("Ignoring invalid config field", field=field_name, error=str(error))
+            continue
+        recovered[field_name] = getattr(candidate, field_name)
+    return AppConfig.model_validate(recovered)
+
 
 def load_config() -> AppConfig:
-    data = {}
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            from wnacg.infrastructure.logger import logger
-            logger.error(f"Failed to parse config.json, using defaults: {e}")
-            
-    try:
-        c = AppConfig(**data)
-    except Exception as e:
-        from wnacg.infrastructure.logger import logger
-        logger.error(f"Config validation error, resetting invalid fields: {e}")
-        c = AppConfig()
-        
-    c.save()
-    return c
+    """Load settings while preserving valid fields and backing up corrupt JSON."""
+    if not CONFIG_FILE.exists():
+        config = AppConfig()
+        config.save()
+        return config
 
-# 全局配置实例
+    try:
+        loaded_data = TypeAdapter(dict[str, object]).validate_python(
+            json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        )
+    except Exception as error:
+        _backup_invalid_config()
+        logger.error("Config JSON is invalid; backup created", error=str(error))
+        config = AppConfig()
+        config.save()
+        return config
+
+    try:
+        config = AppConfig.model_validate(loaded_data)
+    except Exception as error:
+        logger.warning("Recovering valid config fields", error=str(error))
+        config = _recover_valid_fields(loaded_data)
+    config.save()
+    return config
+
+
 cfg = load_config()

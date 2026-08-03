@@ -24,6 +24,7 @@ uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked --group build pyi
     --windowed ^
     --name "WNACG-Downloader" ^
     --icon "src/wnacg/resource/icon.ico" ^
+    --copy-metadata "wnacg-downloader" ^
     --add-data "src/wnacg/resource;wnacg/resource" ^
     --paths "src" ^
     "src/wnacg/main.py"

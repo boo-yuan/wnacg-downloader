@@ -6,13 +6,17 @@ import sys
 def main() -> int:
     """Start the Qt application, or validate UI construction in smoke-test mode."""
     smoke_test_requested = "--smoke-test" in sys.argv
+    from wnacg.infrastructure.logger import configure_logging
+
+    configure_logging()
+    from wnacg.infrastructure.database import initialize_database
+
+    initialize_database()
     if smoke_test_requested:
         from wnacg.infrastructure.config import cfg
-        from wnacg.infrastructure.database import initialize_database
         from wnacg.infrastructure.paths import DATA_DIR
 
         cfg.download_dir = str(DATA_DIR / "downloads")
-        initialize_database()
 
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
@@ -21,6 +25,8 @@ def main() -> int:
     from wnacg.application.downloader import downloader_manager
     from wnacg.ui.components.cover_manager import cover_manager
     from wnacg.ui.main_window import MainWindow
+
+    downloader_manager.prepare()
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
