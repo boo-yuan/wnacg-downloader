@@ -168,6 +168,29 @@ def test_add_redownload_and_delete_task(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert repository.get_task(task.id) is None
 
 
+def test_missing_task_can_be_added_to_paused_queue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cfg, "download_dir", str(tmp_path))
+    monkeypatch.setattr(cfg, "auto_start_download", False)
+    task = DownloadTask(
+        id="missing",
+        comic=Comic(aid="missing", title="Missing"),
+        status=TaskStatus.MISSING,
+        progress=1.0,
+        total_images=2,
+        downloaded_images=2,
+        save_path=str(tmp_path / "Missing"),
+        download_root=str(tmp_path),
+        error_message="Completed download artifacts are missing",
+    )
+    repository = MemoryRepository([task])
+
+    queued = DownloaderWorker(repository).add_task(task.comic)
+
+    assert queued.status is TaskStatus.PAUSED
+    assert queued.downloaded_images == 0
+    assert queued.error_message is None
+
+
 def test_same_title_tasks_use_numeric_suffix_without_gallery_id(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

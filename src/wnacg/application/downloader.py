@@ -213,24 +213,26 @@ class DownloaderWorker(QThread):
         if existing:
             if existing.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
                 return existing
-            elif existing.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING):
+            elif existing.status == TaskStatus.PAUSED:
                 if cfg.auto_start_download and self._loop:
                     self.resume_task(existing.id)
                 return existing
-            elif existing.status == TaskStatus.COMPLETED:
+            elif existing.status in (TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.COMPLETED):
+                previous_status = existing.status
                 self._repository.update_task_status(existing.id, TaskStatus.PENDING)
                 existing.status = TaskStatus.PENDING
+                if previous_status in (TaskStatus.MISSING, TaskStatus.COMPLETED):
+                    existing.set_progress(0, existing.total_images)
+                    existing.options = self._options_from_config()
+                existing.error_message = None
+                self._repository.save_task(existing)
                 if not cfg.auto_start_download:
                     self._repository.update_task_status(existing.id, TaskStatus.PAUSED)
                     existing.status = TaskStatus.PAUSED
-                existing.set_progress(0, existing.total_images)
-                existing.error_message = ""
-                existing.options = self._options_from_config()
-                self._repository.save_task(existing)
                 self.signals.task_status_changed.emit(existing.id, existing.status)
-                self.signals.task_progress.emit(existing.id, 0, existing.total_images)
-                if cfg.auto_start_download and self._loop:
-                    self.resume_task(existing.id)
+                self.signals.task_progress.emit(existing.id, existing.downloaded_images, existing.total_images)
+                if cfg.auto_start_download:
+                    self._check_queue()
                 return existing
 
         task_id = str(uuid.uuid4())

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, QThreadPool, Signal
+from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -188,7 +188,13 @@ class HomeInterface(QWidget):
         self.contentLayout.addWidget(self.scrollArea)
         downloader.signals.task_added.connect(self._on_task_state_changed)
         downloader.signals.task_status_changed.connect(self._on_task_state_changed)
+        downloader.signals.task_deletion_result.connect(self._on_task_deletion_result)
         self._init_bottom_layout()
+
+        self._state_refresh_timer = QTimer(self)
+        self._state_refresh_timer.setInterval(4_000)
+        self._state_refresh_timer.timeout.connect(self._refresh_card_states)
+        self._state_refresh_timer.start()
 
         # 返回顶部悬浮按钮
         self.backToTopBtn = PrimaryToolButton(FIF.UP, self)
@@ -236,9 +242,18 @@ class HomeInterface(QWidget):
         if aid_to_update and aid_to_update in self.card_map:
             self.card_map[aid_to_update].update_download_state()
         elif not aid_to_update:
-            for card in self.card_map.values():
-                if hasattr(card, "update_download_state"):
-                    card.update_download_state()
+            self._refresh_card_states(force=True)
+
+    def _on_task_deletion_result(self, _task_id: str, succeeded: bool, _error: str) -> None:
+        if succeeded:
+            self._refresh_card_states(force=True)
+
+    def _refresh_card_states(self, *, force: bool = False) -> None:
+        """Reconcile visible buttons with persisted state and local artifacts."""
+        if not force and (not self.isVisible() or not self.scrollArea.isVisible()):
+            return
+        for card in tuple(self.card_map.values()):
+            card.update_download_state()
 
     def _init_bottom_layout(self) -> None:
         self._init_empty_state()
@@ -547,6 +562,7 @@ class HomeInterface(QWidget):
 
     def stop_workers(self, deadline: float | None = None) -> None:
         """Request interruption and join all search threads during application shutdown."""
+        self._state_refresh_timer.stop()
         candidates = [self.worker, *self.workers.values(), *self._old_workers]
         workers = list(dict.fromkeys(worker for worker in candidates if worker is not None))
         shutdown_deadline = deadline or (time.monotonic() + 16.0)
@@ -605,16 +621,25 @@ class HomeInterface(QWidget):
         menu.exec(global_pos)
 
     def _bulk_download(self, selected_items: list[ComicCard]) -> None:
+        added_count = 0
         for card in selected_items:
-            if hasattr(card, "comic") and card.downloadBtn.isEnabled():
-                card.downloadBtn.setText("已添加队列")
-                card.downloadBtn.setEnabled(False)
+            if card.can_queue_download:
+                card.mark_queued()
                 self._downloader.add_task(card.comic)
+                added_count += 1
 
         self.scrollWidget.clear_selection()
+        if added_count == 0:
+            InfoBar.info(
+                "无需重复添加",
+                "选中的漫画均已下载或已在队列中",
+                parent=self,
+                position=InfoBarPosition.TOP_RIGHT,
+            )
+            return
         InfoBar.success(
             "批量操作成功",
-            f"已将 {len(selected_items)} 部漫画加入下载队列",
+            f"已将 {added_count} 部漫画加入下载队列",
             parent=self,
             position=InfoBarPosition.TOP_RIGHT,
         )

@@ -57,8 +57,8 @@
 - `uv lock --check`
 - Ruff 全规则集检查与 `ruff format --check`
 - Pyright：0 errors
-- pytest：85 passed
-- 全包（含入口和 Qt UI）分支覆盖率：59.28%（门槛 55%）
+- pytest：94 passed
+- 全包（含入口和 Qt UI）分支覆盖率：61.21%（门槛 55%）
 - 源码 Qt 离屏烟雾测试
 - `run.bat --smoke-test`
 - PyInstaller 单文件构建

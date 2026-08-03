@@ -2,6 +2,7 @@
 # pyright: reportUnknownMemberType=false
 
 import re
+from enum import StrEnum
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
@@ -11,15 +12,64 @@ from qfluentwidgets import CaptionLabel, ElevatedCardWidget, PrimaryPushButton, 
 
 from wnacg.application.file_paths import archive_path, task_directory
 from wnacg.application.ports import TaskRepository
-from wnacg.domain.models import Comic, TaskStatus
+from wnacg.domain.models import Comic, DownloadTask, TaskStatus
 from wnacg.infrastructure.config import cfg
 from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
 
+_IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+
+
+class ComicCardState(StrEnum):
+    """User-visible availability state for one search-result card."""
+
+    CHECKING = "checking"
+    AVAILABLE = "available"
+    QUEUED = "queued"
+    DOWNLOADED = "downloaded"
+    MISSING = "missing"
+    FAILED = "failed"
+
+
+def _expected_image_count(comic: Comic, task: DownloadTask | None) -> int:
+    if task is not None and task.total_images > 0:
+        return task.total_images
+    expected_match = re.search(r"\d+", comic.pic_count)
+    return int(expected_match.group()) if expected_match else 0
+
+
+def _artifacts_are_complete(path: Path, expected_images: int) -> bool:
+    archive = archive_path(path)
+    try:
+        if archive.is_file() and archive.stat().st_size > 0:
+            return True
+        if not path.is_dir():
+            return False
+        image_count = sum(file.is_file() and file.suffix.lower() in _IMAGE_EXTENSIONS for file in path.iterdir())
+    except OSError:
+        return False
+    return image_count >= expected_images if expected_images > 0 else image_count > 0
+
+
+def resolve_comic_card_state(comic: Comic, task: DownloadTask | None, fallback_path: Path) -> ComicCardState:
+    """Resolve queue and artifact state without touching Qt widgets."""
+    path = Path(task.save_path) if task is not None else fallback_path
+    if task is not None and task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
+        return ComicCardState.QUEUED
+    if task is not None and task.status is TaskStatus.FAILED:
+        return ComicCardState.FAILED
+
+    artifacts_complete = _artifacts_are_complete(path, _expected_image_count(comic, task))
+    if task is not None and task.status in (TaskStatus.COMPLETED, TaskStatus.MISSING):
+        return ComicCardState.DOWNLOADED if artifacts_complete else ComicCardState.MISSING
+    if artifacts_complete:
+        return ComicCardState.DOWNLOADED
+    return ComicCardState.AVAILABLE
+
 
 class _StateSignals(QObject):
-    finished = Signal(int, str, bool)
+    finished = Signal(int, str)
 
 
 class _StateWorker(QRunnable):
@@ -35,23 +85,9 @@ class _StateWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         task = self._repository.get_task_by_aid(self.comic.aid)
-        path = Path(task.save_path) if task else task_directory(Path(cfg.download_dir), self.comic.title)
-        on_disk = path.is_dir() or archive_path(path).is_file()
-        if task and task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
-            state = "queued"
-        elif task and task.status == TaskStatus.COMPLETED:
-            state = "downloaded" if on_disk else "download"
-        else:
-            expected_match = re.search(r"\d+", self.comic.pic_count)
-            if path.is_dir() and expected_match:
-                expected = int(expected_match.group())
-                image_extensions = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
-                managed_image_count = sum(
-                    file.is_file() and file.suffix.lower() in image_extensions for file in path.iterdir()
-                )
-                on_disk = managed_image_count >= expected > 0
-            state = "downloaded" if on_disk else "download"
-        self.signals.finished.emit(self.generation, state, task is not None)
+        fallback_path = task_directory(Path(cfg.download_dir), self.comic.title)
+        state = resolve_comic_card_state(self.comic, task, fallback_path)
+        self.signals.finished.emit(self.generation, state.value)
 
 
 class ComicCard(ElevatedCardWidget):
@@ -79,6 +115,7 @@ class ComicCard(ElevatedCardWidget):
 
         self._is_selected = False
         self._state_generation = 0
+        self._download_state = ComicCardState.CHECKING
 
         # 封面图
         self.coverLabel = QLabel(self)
@@ -113,8 +150,9 @@ class ComicCard(ElevatedCardWidget):
         from qfluentwidgets import FluentIcon as FIF
         from qfluentwidgets import PushButton
 
-        self.downloadBtn = PrimaryPushButton("一键下载", self)
+        self.downloadBtn = PrimaryPushButton("正在检查状态…", self)
         self.downloadBtn.setFixedHeight(32)
+        self.downloadBtn.setEnabled(False)
         self.downloadBtn.clicked.connect(self._on_download_clicked)
 
         self.openBtn = PushButton(FIF.FOLDER, "打开文件夹", self)
@@ -150,7 +188,7 @@ class ComicCard(ElevatedCardWidget):
         except RuntimeError:
             return
 
-    _state_updated = Signal(int, str, bool)
+    _state_updated = Signal(int, str)
 
     def update_download_state(self) -> None:
         self._state_generation += 1
@@ -158,22 +196,59 @@ class ComicCard(ElevatedCardWidget):
         worker.signals.finished.connect(self._state_updated.emit)
         self._state_pool.start(worker)
 
-    def _apply_download_state(self, generation: int, state: str, has_task: bool) -> None:
+    def _apply_download_state(self, generation: int, state: str) -> None:
         if generation != self._state_generation:
             return
-        if state == "queued":
+        try:
+            resolved_state = ComicCardState(state)
+        except ValueError:
+            resolved_state = ComicCardState.CHECKING
+        self._download_state = resolved_state
+
+        if resolved_state is ComicCardState.QUEUED:
             self.downloadBtn.setVisible(True)
             self.openBtn.setVisible(False)
-            self.downloadBtn.setText("已在队列")
+            self.downloadBtn.setText("已添加到队列")
             self.downloadBtn.setEnabled(False)
-        elif state == "downloaded":
+        elif resolved_state is ComicCardState.DOWNLOADED:
             self.downloadBtn.setVisible(False)
+            self.downloadBtn.setEnabled(False)
             self.openBtn.setVisible(True)
+            self.openBtn.setText("已下载 · 打开文件")
+            self.openBtn.setEnabled(True)
+        elif resolved_state is ComicCardState.MISSING:
+            self.downloadBtn.setVisible(True)
+            self.openBtn.setVisible(False)
+            self.downloadBtn.setText("文件已删除 · 重新下载")
+            self.downloadBtn.setEnabled(True)
+        elif resolved_state is ComicCardState.FAILED:
+            self.downloadBtn.setVisible(True)
+            self.openBtn.setVisible(False)
+            self.downloadBtn.setText("下载失败 · 重试")
+            self.downloadBtn.setEnabled(True)
+        elif resolved_state is ComicCardState.AVAILABLE:
+            self.downloadBtn.setVisible(True)
+            self.openBtn.setVisible(False)
+            self.downloadBtn.setText("一键下载")
+            self.downloadBtn.setEnabled(True)
         else:
             self.downloadBtn.setVisible(True)
             self.openBtn.setVisible(False)
-            self.downloadBtn.setText("一键下载" if not has_task else "重新下载")
-            self.downloadBtn.setEnabled(True)
+            self.downloadBtn.setText("正在检查状态…")
+            self.downloadBtn.setEnabled(False)
+
+    @property
+    def can_queue_download(self) -> bool:
+        return self._download_state in {
+            ComicCardState.AVAILABLE,
+            ComicCardState.MISSING,
+            ComicCardState.FAILED,
+        }
+
+    def mark_queued(self) -> None:
+        """Apply an optimistic queued state while persistence catches up."""
+        self._state_generation += 1
+        self._apply_download_state(self._state_generation, ComicCardState.QUEUED.value)
 
     def _on_open_clicked(self) -> None:
         task = self._repository.get_task_by_aid(self.comic.aid)
@@ -204,6 +279,7 @@ class ComicCard(ElevatedCardWidget):
             parent.customContextMenuRequested.emit(self.mapToParent(event.pos()))
 
     def _on_download_clicked(self) -> None:
-        self.downloadBtn.setText("已添加队列")
-        self.downloadBtn.setEnabled(False)
+        if not self.can_queue_download:
+            return
+        self.mark_queued()
         self.downloadClicked.emit(self.comic)
