@@ -36,16 +36,14 @@ def task_directory(download_root: Path, title: str) -> Path:
 
 
 def image_base_name(index: int, raw_url: str, naming: str, naming_version: int) -> str:
-    """Build a stable image basename while preserving legacy resumability."""
+    """Build an image basename while preserving recognition of prefixed legacy files."""
     sequence = f"{index + 1:04d}"
     if naming != "original" or not raw_url:
         return sequence
 
     url_name = Path(unquote(urlsplit(raw_url).path)).stem
     original_name = safe_component(url_name, sequence)
-    if naming_version == 1:
-        return original_name
-    return f"{sequence}-{original_name}"
+    return f"{sequence}-{original_name}" if naming_version == 2 else original_name
 
 
 def archive_path(source_directory: Path) -> Path:

@@ -20,7 +20,7 @@ from wnacg.infrastructure.paths import DATA_DIR
 
 DATABASE_PATH = DATA_DIR / "tasks.db"
 _BUSY_TIMEOUT_MILLISECONDS = 30_000
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _TASK_QUEUE_QUERY = """
     SELECT *
     FROM tasks
@@ -108,6 +108,7 @@ def initialize_database() -> None:
                 view_url TEXT NOT NULL DEFAULT '',
                 raw_url TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'downloaded')),
+                output_name TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (task_id, image_index),
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             )
@@ -123,6 +124,9 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE tasks ADD COLUMN download_root TEXT NOT NULL DEFAULT ''")
         if "options_json" not in legacy_task_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN options_json TEXT")
+        legacy_image_columns = _column_names(connection, "images")
+        if "output_name" not in legacy_image_columns:
+            connection.execute("ALTER TABLE images ADD COLUMN output_name TEXT NOT NULL DEFAULT ''")
 
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_aid ON tasks(aid)")
         connection.execute(
@@ -438,6 +442,7 @@ def get_images(task_id: str) -> list[ImageRecord]:
             view_url=str(row["view_url"] or ""),
             raw_url=str(row["raw_url"] or ""),
             status=str(row["status"]),
+            output_name=str(row["output_name"] or ""),
         )
         for row in rows
     ]
@@ -452,12 +457,21 @@ def update_image_raw_url(task_id: str, image_index: int, raw_url: str) -> None:
         )
 
 
-def update_image_status(task_id: str, image_index: int, status: str) -> None:
-    """Persist the download status of one image."""
+def update_image_status(task_id: str, image_index: int, status: str, output_name: str = "") -> None:
+    """Atomically persist image status and its validated final direct-child name."""
+    if status not in {"pending", "downloaded"}:
+        raise ValueError(f"Invalid image status: {status}")
+    if status == "pending":
+        output_name = ""
+    candidate = Path(output_name)
+    if status == "downloaded" and (
+        not output_name or len(output_name) > 255 or candidate.name != output_name or output_name in {".", ".."}
+    ):
+        raise ValueError(f"Invalid image output name: {output_name}")
     with _transaction() as connection:
         connection.execute(
-            "UPDATE images SET status = ? WHERE task_id = ? AND image_index = ?",
-            (status, task_id, image_index),
+            "UPDATE images SET status = ?, output_name = ? WHERE task_id = ? AND image_index = ?",
+            (status, output_name, task_id, image_index),
         )
 
 

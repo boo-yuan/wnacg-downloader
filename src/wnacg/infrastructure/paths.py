@@ -70,6 +70,7 @@ def initialize_data_dir(data_dir: Path) -> tuple[str, ...]:
 
 DATA_DIR = _configured_data_dir()
 CACHE_DIR = DATA_DIR / "cache"
+ARTIFACT_METADATA_DIR = DATA_DIR / "artifacts"
 _path_migration_warnings: tuple[str, ...] = ()
 
 

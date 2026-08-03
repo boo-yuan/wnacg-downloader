@@ -19,9 +19,13 @@ def test_task_directory_uses_safe_title_without_gallery_id(tmp_path: Path) -> No
     assert "[" not in result.name
 
 
-def test_image_original_name_keeps_sequence_to_avoid_collision() -> None:
+def test_image_original_name_has_no_sequence_prefix() -> None:
+    assert image_base_name(0, "https://a.test/path/original-name.jpg", "original", 1) == "original-name"
+    assert image_base_name(1, "https://b.test/other/second.png", "original", 1) == "second"
+
+
+def test_legacy_prefixed_name_remains_derivable_for_resume() -> None:
     assert image_base_name(0, "https://a.test/path/same.jpg", "original", 2) == "0001-same"
-    assert image_base_name(1, "https://b.test/other/same.png", "original", 2) == "0002-same"
 
 
 def test_archive_path_preserves_dots() -> None:

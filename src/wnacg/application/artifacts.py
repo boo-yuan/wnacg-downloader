@@ -1,6 +1,7 @@
 """Manifest-based reconciliation and atomic archive creation for task artifacts."""
 
 import contextlib
+import hashlib
 import re
 import uuid
 import zipfile
@@ -38,20 +39,30 @@ class ArtifactManifest(BaseModel):
         return unique
 
 
-def _manifest_path(source_directory: Path) -> Path:
+def _manifest_path(metadata_directory: Path, task_id: str) -> Path:
+    task_key = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    return metadata_directory / f"{task_key}.json"
+
+
+def _legacy_manifest_path(source_directory: Path) -> Path:
     return source_directory / _MANIFEST_NAME
 
 
-def load_manifest(source_directory: Path, task_id: str) -> ArtifactManifest | None:
-    """Load a matching manifest, treating invalid or foreign files as unowned."""
-    manifest_path = _manifest_path(source_directory)
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        return None
-    try:
-        manifest = ArtifactManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return manifest if manifest.task_id == task_id else None
+def load_manifest(source_directory: Path, task_id: str, metadata_directory: Path) -> ArtifactManifest | None:
+    """Load external or legacy ownership metadata, treating invalid files as unowned."""
+    for manifest_path in (
+        _manifest_path(metadata_directory, task_id),
+        _legacy_manifest_path(source_directory),
+    ):
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            continue
+        try:
+            manifest = ArtifactManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if manifest.task_id == task_id:
+            return manifest
+    return None
 
 
 def _validated_managed_file(source_directory: Path, name: str) -> Path:
@@ -61,15 +72,31 @@ def _validated_managed_file(source_directory: Path, name: str) -> Path:
     return candidate
 
 
-def _write_manifest(source_directory: Path, manifest: ArtifactManifest) -> None:
-    source_directory.mkdir(parents=True, exist_ok=True)
-    manifest_path = _manifest_path(source_directory)
+def _write_manifest(metadata_directory: Path, manifest: ArtifactManifest) -> None:
+    metadata_directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = _manifest_path(metadata_directory, manifest.task_id)
     temporary_path = manifest_path.with_name(f".{manifest_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
         temporary_path.replace(manifest_path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def migrate_manifest(source_directory: Path, task_id: str, metadata_directory: Path) -> None:
+    """Move legacy in-gallery ownership metadata to the application data directory."""
+    legacy_path = _legacy_manifest_path(source_directory)
+    manifest = load_manifest(source_directory, task_id, metadata_directory)
+    if manifest is None:
+        return
+    _write_manifest(metadata_directory, manifest)
+    legacy_path.unlink(missing_ok=True)
+
+
+def forget_manifest(source_directory: Path, task_id: str, metadata_directory: Path) -> None:
+    """Remove ownership metadata without touching preserved user-visible artifacts."""
+    _manifest_path(metadata_directory, task_id).unlink(missing_ok=True)
+    _legacy_manifest_path(source_directory).unlink(missing_ok=True)
 
 
 def create_archive(source_directory: Path, managed_files: list[Path]) -> Path:
@@ -100,10 +127,11 @@ def reconcile_artifacts(
     current_files: list[Path],
     pack_to_zip: bool,
     delete_originals: bool,
+    metadata_directory: Path,
 ) -> None:
     """Remove previously owned stale files and publish the current manifest/archive."""
     current_names = {path.name for path in current_files}
-    previous = load_manifest(source_directory, task_id)
+    previous = load_manifest(source_directory, task_id, metadata_directory)
     if previous is not None:
         for stale_name in set(previous.files) - current_names:
             stale_file = _validated_managed_file(source_directory, stale_name)
@@ -123,15 +151,16 @@ def reconcile_artifacts(
         files=sorted(current_names),
         archive_created=pack_to_zip,
     )
-    _write_manifest(source_directory, manifest)
+    _write_manifest(metadata_directory, manifest)
+    _legacy_manifest_path(source_directory).unlink(missing_ok=True)
 
     if pack_to_zip and delete_originals:
         for current_file in current_files:
             validated = _validated_managed_file(source_directory, current_file.name)
             if validated.is_file():
                 validated.unlink()
-        # Keep the manifest directory as durable ownership metadata. A later
-        # redownload can then remove a stale archive when packing is disabled.
+        with contextlib.suppress(OSError):
+            source_directory.rmdir()
 
 
 def remove_owned_artifacts(
@@ -139,10 +168,11 @@ def remove_owned_artifacts(
     task_id: str,
     source_directory: Path,
     expected_files: list[Path],
+    metadata_directory: Path,
 ) -> None:
     """Remove only files attributable to a task and preserve unrelated content."""
     owned_names = {path.name for path in expected_files if path.parent == source_directory}
-    previous = load_manifest(source_directory, task_id)
+    previous = load_manifest(source_directory, task_id, metadata_directory)
     if previous is not None:
         owned_names.update(previous.files)
 
@@ -156,7 +186,14 @@ def remove_owned_artifacts(
         if candidate.is_file():
             candidate.unlink()
 
-    _manifest_path(source_directory).unlink(missing_ok=True)
+    if previous is not None and previous.archive_created:
+        final_archive = archive_path(source_directory)
+        if final_archive.is_symlink():
+            raise ValueError(f"Unsafe task archive is a filesystem link: {final_archive}")
+        if final_archive.is_file():
+            final_archive.unlink()
+
+    forget_manifest(source_directory, task_id, metadata_directory)
     # The directory may contain user-owned or otherwise unrecognized content.
     with contextlib.suppress(OSError):
         source_directory.rmdir()

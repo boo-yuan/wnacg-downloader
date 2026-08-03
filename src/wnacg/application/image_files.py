@@ -30,15 +30,32 @@ def is_valid_image(file_path: Path, maximum_pixels: int) -> bool:
         return False
 
 
-def expected_image_paths(task: DownloadTask, image: ImageRecord, options: DownloadOptions) -> list[Path]:
-    """Return every possible output path for a persisted image record."""
-    base_name = image_base_name(image["image_index"], image["raw_url"], options.naming.value, options.naming_version)
-    extensions = (
+def _output_extensions(options: DownloadOptions) -> tuple[str, ...]:
+    return (
         tuple(sorted(PIL.Image.registered_extensions()))
         if options.image_format.value == "original"
         else (f".{options.image_format.value}",)
     )
-    return [Path(task.save_path) / f"{base_name}{extension}" for extension in extensions]
+
+
+def preferred_image_paths(task: DownloadTask, image: ImageRecord, options: DownloadOptions) -> list[Path]:
+    """Return current-policy output paths for one persisted image record."""
+    base_name = image_base_name(image["image_index"], image["raw_url"], options.naming.value, options.naming_version)
+    return [Path(task.save_path) / f"{base_name}{extension}" for extension in _output_extensions(options)]
+
+
+def expected_image_paths(task: DownloadTask, image: ImageRecord, options: DownloadOptions) -> list[Path]:
+    """Return persisted, current, and legacy output candidates for safe resume."""
+    candidates: list[Path] = []
+    recorded_name = image["output_name"]
+    if recorded_name and Path(recorded_name).name == recorded_name and recorded_name not in {".", ".."}:
+        candidates.append(Path(task.save_path) / recorded_name)
+    candidates.extend(preferred_image_paths(task, image, options))
+    if options.naming.value == "original" and image["raw_url"]:
+        legacy_version = 2 if options.naming_version == 1 else 1
+        legacy_options = options.model_copy(update={"naming_version": legacy_version})
+        candidates.extend(preferred_image_paths(task, image, legacy_options))
+    return list(dict.fromkeys(candidates))
 
 
 def process_image(
@@ -72,6 +89,10 @@ def process_image(
             target_extension = f".{target_format}"
         base_name = image_base_name(index, raw_url, options.naming.value, options.naming_version)
         final_path = save_directory / f"{base_name}{target_extension}"
+        suffix = 2
+        while final_path.exists():
+            final_path = save_directory / f"{base_name} ({suffix}){target_extension}"
+            suffix += 1
         temporary_path = final_path.with_name(f".{final_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             if options.image_format.value == "original":

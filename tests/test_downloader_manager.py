@@ -82,13 +82,27 @@ class MemoryRepository:
 
     def save_view_links(self, task_id: str, view_links: list[str]) -> None:
         self.images[task_id] = [
-            ImageRecord(task_id=task_id, image_index=index, view_url=url, raw_url="", status="pending")
+            ImageRecord(
+                task_id=task_id,
+                image_index=index,
+                view_url=url,
+                raw_url="",
+                status="pending",
+                output_name="",
+            )
             for index, url in enumerate(view_links)
         ]
 
     def save_raw_links(self, task_id: str, raw_urls: list[str]) -> None:
         self.images[task_id] = [
-            ImageRecord(task_id=task_id, image_index=index, view_url="", raw_url=url, status="pending")
+            ImageRecord(
+                task_id=task_id,
+                image_index=index,
+                view_url="",
+                raw_url=url,
+                status="pending",
+                output_name="",
+            )
             for index, url in enumerate(raw_urls)
         ]
 
@@ -98,8 +112,9 @@ class MemoryRepository:
     def update_image_raw_url(self, task_id: str, image_index: int, raw_url: str) -> None:
         self.images[task_id][image_index]["raw_url"] = raw_url
 
-    def update_image_status(self, task_id: str, image_index: int, status: str) -> None:
+    def update_image_status(self, task_id: str, image_index: int, status: str, output_name: str = "") -> None:
         self.images[task_id][image_index]["status"] = status
+        self.images[task_id][image_index]["output_name"] = output_name
 
 
 class _ImageResponse:
@@ -120,10 +135,23 @@ class _ImageResponse:
 class _ImageClient:
     def __init__(self, payload: bytes) -> None:
         self._response = _ImageResponse(payload)
+        self.requested_urls: list[str] = []
 
-    async def get(self, _url: str, **request_options: object) -> _ImageResponse:
+    async def get(self, url: str, **request_options: object) -> _ImageResponse:
         del request_options
+        self.requested_urls.append(url)
         return self._response
+
+
+class _ImageClientContext:
+    def __init__(self, client: _ImageClient) -> None:
+        self._client = client
+
+    async def __aenter__(self) -> _ImageClient:
+        return self._client
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
 
 
 def test_prepare_marks_missing_artifacts_without_deleting_history(tmp_path: Path) -> None:
@@ -278,7 +306,7 @@ def test_delete_task_preserves_unowned_files(monkeypatch: pytest.MonkeyPatch, tm
     assert repository.get_task(task.id) is None
     assert task_path.exists()
     assert (task_path / "partial.jpg").read_bytes() == b"partial"
-    assert not zip_path.exists()
+    assert zip_path.read_bytes() == b"archive"
 
 
 def test_cancel_completed_task_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -315,7 +343,7 @@ async def test_process_task_completes_from_valid_existing_files(
         status=TaskStatus.PENDING,
         save_path=str(task_path),
         download_root=str(tmp_path),
-        options=DownloadOptions(),
+        options=DownloadOptions(naming_version=2),
     )
     repository = MemoryRepository([task])
     repository.images[task.id] = [
@@ -325,6 +353,7 @@ async def test_process_task_completes_from_valid_existing_files(
             view_url="",
             raw_url="https://img.example/one.png",
             status="pending",
+            output_name="",
         )
     ]
     worker = DownloaderWorker(repository)
@@ -336,7 +365,73 @@ async def test_process_task_completes_from_valid_existing_files(
     assert task.status is TaskStatus.COMPLETED
     assert task.progress == 1.0
     assert repository.images[task.id][0]["status"] == "downloaded"
-    assert (task_path / ".wnacg-manifest.json").exists()
+    assert task.options is not None
+    assert task.options.naming_version == 1
+    assert not (task_path / ".wnacg-manifest.json").exists()
+    assert (task_path / "one.jpg").exists()
+    assert not (task_path / "0001-one.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_paused_task_resumes_from_persisted_output_without_redownloading(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from wnacg.application import downloader
+    from wnacg.infrastructure.crawler import WnacgCrawler
+
+    payload_buffer = BytesIO()
+    Image.new("RGB", (8, 8), "green").save(payload_buffer, format="JPEG")
+    client = _ImageClient(payload_buffer.getvalue())
+    monkeypatch.setattr(WnacgCrawler, "get_client", lambda: _ImageClientContext(client))
+    monkeypatch.setattr(downloader, "ARTIFACT_METADATA_DIR", tmp_path / "metadata")
+
+    task_path = tmp_path / "Resume"
+    task_path.mkdir()
+    Image.new("RGB", (8, 8), "blue").save(task_path / "one.jpg")
+    task = DownloadTask(
+        id="resume-partial",
+        comic=Comic(aid="resume", title="Resume"),
+        status=TaskStatus.PENDING,
+        progress=0.5,
+        total_images=2,
+        downloaded_images=1,
+        save_path=str(task_path),
+        download_root=str(tmp_path),
+        options=DownloadOptions(delay_seconds=0.0),
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [
+        ImageRecord(
+            task_id=task.id,
+            image_index=0,
+            view_url="",
+            raw_url="https://1.1.1.1/one.jpg",
+            status="downloaded",
+            output_name="one.jpg",
+        ),
+        ImageRecord(
+            task_id=task.id,
+            image_index=1,
+            view_url="",
+            raw_url="https://1.1.1.1/two.jpg",
+            status="pending",
+            output_name="",
+        ),
+    ]
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(2)
+    worker._active_tasks[task.id] = Future()
+
+    await worker._process_task(task.id)
+
+    assert client.requested_urls == ["https://1.1.1.1/two.jpg"]
+    assert task.status is TaskStatus.COMPLETED
+    assert task.downloaded_images == 2
+    assert (task_path / "one.jpg").exists()
+    assert (task_path / "two.jpg").exists()
+    assert not (task_path / ".wnacg-manifest.json").exists()
+    assert len(list((tmp_path / "metadata").glob("*.json"))) == 1
 
 
 @pytest.mark.asyncio
@@ -387,6 +482,7 @@ async def test_download_image_streams_valid_payload_and_persists_progress(
         view_url="",
         raw_url="https://1.1.1.1/one.jpg",
         status="pending",
+        output_name="",
     )
     repository = MemoryRepository([task])
     repository.images[task.id] = [image]
@@ -405,7 +501,8 @@ async def test_download_image_streams_valid_payload_and_persists_progress(
     assert succeeded
     assert task.progress == 1.0
     assert repository.images[task.id][0]["status"] == "downloaded"
-    assert (tmp_path / "0001-one.jpg").exists()
+    assert (tmp_path / "one.jpg").exists()
+    assert repository.images[task.id][0]["output_name"] == "one.jpg"
 
 
 @pytest.mark.asyncio
@@ -446,6 +543,7 @@ async def test_raw_url_resolution_retries_transient_failure(
         view_url="https://www.wnacg.com/view-1",
         raw_url="",
         status="pending",
+        output_name="",
     )
     repository = MemoryRepository([task])
     repository.images[task.id] = [image]
@@ -493,6 +591,7 @@ async def test_processed_output_cannot_exceed_task_budget(
         view_url="",
         raw_url="https://1.1.1.1/one.jpg",
         status="pending",
+        output_name="",
     )
     repository = MemoryRepository([task])
     repository.images[task.id] = [image]
@@ -511,4 +610,4 @@ async def test_processed_output_cannot_exceed_task_budget(
 
     assert not succeeded
     assert budget.used_bytes == 0
-    assert not (tmp_path / "0001-one.jpg").exists()
+    assert not (tmp_path / "one.jpg").exists()

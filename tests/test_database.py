@@ -106,10 +106,11 @@ def test_image_updates_progress_reset_and_delete(monkeypatch: pytest.MonkeyPatch
     database.save_task(task)
     database.save_view_links(task.id, ["https://www.wnacg.com/view-1", "https://www.wnacg.com/view-2"])
     database.update_image_raw_url(task.id, 0, "https://img.example/one.jpg")
-    database.update_image_status(task.id, 0, "downloaded")
+    database.update_image_status(task.id, 0, "downloaded", "one.jpg")
     images = database.get_images(task.id)
     assert images[0]["raw_url"] == "https://img.example/one.jpg"
     assert images[0]["status"] == "downloaded"
+    assert images[0]["output_name"] == "one.jpg"
 
     database.update_task_progress(task.id, 0.5, 1, 2)
     database.update_task_status(task.id, TaskStatus.DOWNLOADING)
@@ -122,6 +123,44 @@ def test_image_updates_progress_reset_and_delete(monkeypatch: pytest.MonkeyPatch
     database.delete_task(task.id)
     assert database.get_task(task.id) is None
     assert database.get_images(task.id) == []
+
+
+def test_image_output_name_rejects_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "tasks.db")
+    database.initialize_database()
+    task = DownloadTask(id="task-1", comic=Comic(aid="100", title="Title"))
+    database.save_task(task)
+    database.save_raw_links(task.id, ["https://img.example/one.jpg"])
+
+    with pytest.raises(ValueError, match="Invalid image output name"):
+        database.update_image_status(task.id, 0, "downloaded", "../one.jpg")
+
+
+def test_schema_four_migrates_image_output_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    database_path = tmp_path / "tasks.db"
+    monkeypatch.setattr(database, "DATABASE_PATH", database_path)
+    with database.sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE images (
+                task_id TEXT NOT NULL,
+                image_index INTEGER NOT NULL,
+                view_url TEXT NOT NULL DEFAULT '',
+                raw_url TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                PRIMARY KEY (task_id, image_index)
+            )
+            """
+        )
+        connection.execute("PRAGMA user_version = 4")
+
+    database.initialize_database()
+
+    with database.sqlite3.connect(database_path) as connection:
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    assert "output_name" in columns
+    assert version == 5
 
 
 def test_save_task_enforces_status_transitions_and_unique_gallery(

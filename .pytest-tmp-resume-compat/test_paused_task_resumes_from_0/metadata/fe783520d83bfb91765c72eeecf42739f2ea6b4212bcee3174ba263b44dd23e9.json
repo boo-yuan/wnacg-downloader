@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "task_id": "resume-partial",
+  "files": [
+    "one.jpg",
+    "two.jpg"
+  ],
+  "archive_created": false
+}

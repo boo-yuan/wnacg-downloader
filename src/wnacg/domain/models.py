@@ -54,7 +54,7 @@ class DownloadOptions(BaseModel):
     delay_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
     pack_to_zip: bool = False
     delete_original_after_pack: bool = False
-    naming_version: int = Field(default=2, ge=1, le=2)
+    naming_version: int = Field(default=1, ge=1, le=2)
 
 
 class Comic(BaseModel):
