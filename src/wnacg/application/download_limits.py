@@ -1,10 +1,12 @@
 """Event-loop-local download budgets, rate limiting, and speed accounting."""
 
 import asyncio
+import shutil
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -26,6 +28,26 @@ class TaskByteBudget:
         """Release bytes written by a failed download attempt."""
         async with self._lock:
             self.used_bytes = max(0, self.used_bytes - byte_count)
+
+
+@dataclass(slots=True)
+class DiskSpaceGuard:
+    """Check free space after aggregate writes, including many small images."""
+
+    check_interval_bytes: int = 8 * 1024 * 1024
+    _bytes_since_check: int = 0
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def record_write(self, directory: str | Path, byte_count: int, minimum_free_bytes: int) -> None:
+        """Account for a write and periodically enforce the configured free-space floor."""
+        async with self._lock:
+            self._bytes_since_check += max(0, byte_count)
+            if self._bytes_since_check < self.check_interval_bytes:
+                return
+            self._bytes_since_check = 0
+            free_bytes = await asyncio.to_thread(shutil.disk_usage, directory)
+            if free_bytes.free < minimum_free_bytes:
+                raise OSError("Insufficient free disk space for download")
 
 
 class SpeedMonitor:
@@ -73,6 +95,23 @@ class TokenBucket:
             sleep_time = 0 if self._tokens >= 0 else -self._tokens / rate_limit
         if sleep_time > 0:
             await asyncio.sleep(sleep_time)
+
+
+class RequestPacer:
+    """Serialize network request starts with a process-wide minimum interval."""
+
+    def __init__(self) -> None:
+        self._next_start = 0.0
+        self._lock = asyncio.Lock()
+
+    async def wait(self, delay_seconds: float) -> None:
+        """Wait until the next globally permitted request start time."""
+        async with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_start - now)
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            self._next_start = time.monotonic() + max(0.0, delay_seconds)
 
 
 class AdjustableLimiter:

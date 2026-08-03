@@ -2,11 +2,19 @@ import asyncio
 import threading
 import time
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 import pytest
 
-from wnacg.application.download_limits import AdjustableLimiter, SpeedMonitor, TaskByteBudget, TokenBucket
+from wnacg.application import download_limits
+from wnacg.application.download_limits import (
+    AdjustableLimiter,
+    DiskSpaceGuard,
+    RequestPacer,
+    SpeedMonitor,
+    TaskByteBudget,
+    TokenBucket,
+)
 from wnacg.application.downloader import DownloaderWorker
 from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import Comic, DownloadTask, TaskStatus
@@ -22,6 +30,12 @@ class _ProgressRepository:
             time.sleep(0.05)
         with self._lock:
             self.persisted = downloaded
+
+
+class _DiskUsage(NamedTuple):
+    total: int
+    used: int
+    free: int
 
 
 @pytest.mark.asyncio
@@ -80,6 +94,40 @@ async def test_speed_monitor_and_unlimited_bucket() -> None:
     bucket = TokenBucket()
     await bucket.consume(1_024, 0)
     await bucket.consume(1, 1_000_000)
+
+
+@pytest.mark.asyncio
+async def test_request_pacer_serializes_request_starts() -> None:
+    pacer = RequestPacer()
+    starts: list[float] = []
+
+    async def record_start() -> None:
+        await pacer.wait(0.02)
+        starts.append(time.monotonic())
+
+    async with asyncio.TaskGroup() as task_group:
+        task_group.create_task(record_start())
+        task_group.create_task(record_start())
+
+    assert starts[1] - starts[0] >= 0.01
+
+
+@pytest.mark.asyncio
+async def test_disk_guard_counts_small_writes_across_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def low_disk_usage(_directory: str | Path) -> _DiskUsage:
+        nonlocal calls
+        calls += 1
+        return _DiskUsage(total=100, used=95, free=5)
+
+    monkeypatch.setattr(download_limits.shutil, "disk_usage", low_disk_usage)
+    guard = DiskSpaceGuard(check_interval_bytes=10)
+
+    await guard.record_write("downloads", 6, minimum_free_bytes=10)
+    with pytest.raises(OSError, match="Insufficient free disk space"):
+        await guard.record_write("downloads", 5, minimum_free_bytes=10)
+    assert calls == 1
 
 
 def test_destructive_artifact_cleanup_rejects_unrecorded_root(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 """Validated network, download, and application settings interfaces."""
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import asyncio
 import re
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import cast
@@ -37,6 +39,7 @@ from wnacg.infrastructure.logger import LOG_PATH, logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
     ensure_public_https_url_sync,
+    ensure_public_peer_address,
     read_limited_chunks,
 )
 from wnacg.infrastructure.updater import Updater
@@ -146,6 +149,8 @@ class DomainFetchWorker(QThread):
             discovery_url = ensure_public_https_url_sync("https://wnacg01.link/")
             with WnacgCrawler.get_sync_client() as client:
                 r = client.get(discovery_url, timeout=10.0, stream=True)
+                if cfg.proxy_mode is ProxyMode.DIRECT:
+                    ensure_public_peer_address(r.primary_ip)
                 if r.status_code == 200:
                     ensure_public_https_url_sync(str(r.url), allowed_hosts={"wnacg01.link"})
                     ensure_expected_content_type(r.headers, {"text/html", "application/xhtml+xml"})
@@ -203,6 +208,8 @@ class NetworkTestWorker(QThread):
                 domain = cfg.domain if cfg.domain.startswith("http") else f"https://{cfg.domain}"
                 domain = ensure_public_https_url_sync(domain, allowed_hosts={cfg.domain})
                 r = s.get(domain, timeout=15.0, stream=True)
+                if cfg.proxy_mode is ProxyMode.DIRECT:
+                    ensure_public_peer_address(r.primary_ip)
                 ensure_public_https_url_sync(str(r.url), allowed_hosts=set(cfg.backup_domains))
 
             elapsed = time.time() - start_time
@@ -413,13 +420,15 @@ class NetworkSettingInterface(BaseSettingInterface):
             self.domainCard.comboBox.setText(cfg.domain)
             InfoBar.error("域名无效", str(error), parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
-    def stop_workers(self) -> None:
+    def stop_workers(self, deadline: float | None = None) -> None:
         """Join network-setting workers before Qt object destruction."""
+        shutdown_deadline = deadline or (time.monotonic() + 16.0)
         for attribute in ("test_worker", "fetch_worker"):
             worker = cast(QThread | None, getattr(self, attribute, None))
             if worker is not None:
                 worker.requestInterruption()
-                if worker.isRunning() and not worker.wait(16_000):
+                remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
+                if worker.isRunning() and not worker.wait(remaining_milliseconds):
                     logger.warning("Settings worker did not stop", worker=attribute)
 
     def _fetch_latest_domains(self) -> None:
@@ -731,10 +740,12 @@ class AboutSettingInterface(BaseSettingInterface):
             )
             w.exec()
 
-    def stop_workers(self) -> None:
+    def stop_workers(self, deadline: float | None = None) -> None:
         """Join the update checker before Qt object destruction."""
+        shutdown_deadline = deadline or (time.monotonic() + 16.0)
         worker = cast(QThread | None, getattr(self, "updateWorker", None))
         if worker is not None:
             worker.requestInterruption()
-            if worker.isRunning() and not worker.wait(16_000):
+            remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
+            if worker.isRunning() and not worker.wait(remaining_milliseconds):
                 logger.warning("Update worker did not stop")

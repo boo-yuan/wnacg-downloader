@@ -39,6 +39,21 @@ def test_destructive_path_must_be_direct_child(tmp_path: Path) -> None:
         validated_task_directory(root / "nested" / "comic", root)
 
 
+def test_task_directory_rejects_filesystem_links(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "downloads"
+    root.mkdir()
+    linked = root / "linked"
+    linked.mkdir()
+
+    def is_test_junction(path: Path) -> bool:
+        return path == linked
+
+    monkeypatch.setattr(Path, "is_junction", is_test_junction)
+
+    with pytest.raises(ValueError, match="filesystem link"):
+        validated_task_directory(linked, root)
+
+
 @pytest.mark.parametrize("value", ["CON", "..", 'a<b>c:"'])
 def test_safe_component_rejects_problematic_names(value: str) -> None:
     result = safe_component(value, "fallback")

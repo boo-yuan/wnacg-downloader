@@ -17,6 +17,17 @@ class TaskStatus(StrEnum):
     CANCELED = "canceled"
 
 
+CANCELLABLE_TASK_STATUSES = frozenset(
+    {
+        TaskStatus.PENDING,
+        TaskStatus.DOWNLOADING,
+        TaskStatus.PAUSED,
+        TaskStatus.FAILED,
+        TaskStatus.MISSING,
+    }
+)
+
+
 class DownloadNaming(StrEnum):
     """Supported image naming policies."""
 
@@ -134,7 +145,7 @@ _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     ),
     TaskStatus.PAUSED: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
     TaskStatus.FAILED: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
-    TaskStatus.COMPLETED: frozenset({TaskStatus.PENDING, TaskStatus.MISSING, TaskStatus.CANCELED}),
+    TaskStatus.COMPLETED: frozenset({TaskStatus.PENDING, TaskStatus.MISSING}),
     TaskStatus.MISSING: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
     TaskStatus.CANCELED: frozenset(),
 }

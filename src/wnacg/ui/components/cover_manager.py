@@ -12,18 +12,22 @@ from typing import cast
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
-from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
     ensure_public_https_url_sync,
+    ensure_public_peer_address,
     read_limited_chunks,
 )
 from wnacg.infrastructure.paths import CACHE_DIR
 
 _COVER_CACHE_DIR = CACHE_DIR / "covers"
 _COVER_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+_COVER_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_COVER_CACHE_MAX_FILES = 2_000
+_COVER_CACHE_LOCK = threading.RLock()
 _IMAGE_CONTENT_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
 type CoverCallback = Callable[[str, QImage], None]
 
@@ -34,17 +38,38 @@ def get_temp_dir() -> str:
     return str(_COVER_CACHE_DIR)
 
 
-def _expire_cover_cache() -> None:
-    """Remove only expired regular files from the application-owned cache."""
+def _expire_cover_cache_unlocked() -> None:
     if not _COVER_CACHE_DIR.is_dir():
         return
     cutoff = time.time() - _COVER_CACHE_TTL_SECONDS
+    retained_files: list[tuple[Path, float, int]] = []
     for cache_file in _COVER_CACHE_DIR.iterdir():
         try:
-            if cache_file.is_file() and not cache_file.is_symlink() and cache_file.stat().st_mtime < cutoff:
+            if not cache_file.is_file() or cache_file.is_symlink():
+                continue
+            metadata = cache_file.stat()
+            if metadata.st_mtime < cutoff:
                 cache_file.unlink()
+            else:
+                retained_files.append((cache_file, metadata.st_mtime, metadata.st_size))
         except OSError as error:
             logger.warning("Expired cover cache removal failed", path=str(cache_file), error=str(error))
+
+    retained_files.sort(key=lambda item: item[1])
+    retained_bytes = sum(item[2] for item in retained_files)
+    while retained_files and (len(retained_files) > _COVER_CACHE_MAX_FILES or retained_bytes > _COVER_CACHE_MAX_BYTES):
+        cache_file, _modified_time, file_size = retained_files.pop(0)
+        try:
+            cache_file.unlink()
+            retained_bytes -= file_size
+        except OSError as error:
+            logger.warning("Cover cache quota cleanup failed", path=str(cache_file), error=str(error))
+
+
+def _expire_cover_cache() -> None:
+    """Remove expired files and enforce cache byte/count quotas."""
+    with _COVER_CACHE_LOCK:
+        _expire_cover_cache_unlocked()
 
 
 class CoverManagerSignals(QObject):
@@ -61,9 +86,14 @@ class CoverFetchTask(QRunnable):
     def run(self) -> None:
         if self.stop_event.is_set():
             return
-        safe_url = ensure_public_https_url_sync(self.url)
-        filename = hashlib.sha256(self.url.encode()).hexdigest() + ".jpg"
-        filepath = Path(get_temp_dir()) / filename
+        try:
+            safe_url = ensure_public_https_url_sync(self.url)
+            filename = hashlib.sha256(self.url.encode()).hexdigest() + ".jpg"
+            filepath = Path(get_temp_dir()) / filename
+        except Exception as error:
+            logger.warning("Cover URL validation failed", url=self.url, error=str(error))
+            self.signals.finished.emit(self.url, QImage())
+            return
 
         # 1. Load from disk if exists
         if filepath.exists():
@@ -80,6 +110,8 @@ class CoverFetchTask(QRunnable):
             try:
                 with WnacgCrawler.get_sync_client() as client:
                     resp = client.get(safe_url, timeout=5.0, stream=True)
+                    if cfg.proxy_mode is ProxyMode.DIRECT:
+                        ensure_public_peer_address(resp.primary_ip)
                     resp.raise_for_status()
                     ensure_public_https_url_sync(str(resp.url))
                     ensure_expected_content_type(resp.headers, _IMAGE_CONTENT_TYPES)
@@ -96,8 +128,10 @@ class CoverFetchTask(QRunnable):
                 img = QImage()
                 if img.loadFromData(content) and img.width() * img.height() <= cfg.max_image_pixels:
                     temporary_path = filepath.with_name(f".{filename}.{uuid.uuid4().hex}.tmp")
-                    temporary_path.write_bytes(content)
-                    temporary_path.replace(filepath)
+                    with _COVER_CACHE_LOCK:
+                        temporary_path.write_bytes(content)
+                        temporary_path.replace(filepath)
+                    _expire_cover_cache()
                     self.signals.finished.emit(self.url, img)
                     return
                 raise ValueError("Invalid image data")
@@ -151,13 +185,12 @@ class CoverManagerClass(QObject):
                 except Exception as error:
                     logger.error("Cover callback failed", url=url, error=str(error))
 
-    def stop(self) -> None:
+    def stop(self, deadline: float | None = None) -> None:
+        """Stop cover work without exceeding a shared application deadline."""
+        shutdown_deadline = deadline or (time.monotonic() + 6.0)
         self._stop_event.set()
         self.cover_pool.clear()
-        if not self.cover_pool.waitForDone(6_000):
+        remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
+        if not self.cover_pool.waitForDone(remaining_milliseconds):
             logger.warning("Cover worker pool did not stop within timeout")
         self._pending_callbacks.clear()
-
-
-# Global singleton
-cover_manager = CoverManagerClass()

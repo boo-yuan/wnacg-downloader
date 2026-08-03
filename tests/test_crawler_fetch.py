@@ -5,7 +5,8 @@ import pytest
 from curl_cffi.requests import AsyncSession, Response, Session
 
 from wnacg.infrastructure import crawler
-from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.crawler import CrawlError, WnacgCrawler
 
 
 class _Response:
@@ -33,6 +34,12 @@ class _SyncClient:
 class _AsyncClient:
     async def get(self, _url: str, **_kwargs: object) -> _Response:
         return _Response()
+
+    async def __aenter__(self) -> "_AsyncClient":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 def _validate_sync(url: str, *, allowed_hosts: set[str] | None = None) -> str:
@@ -64,3 +71,29 @@ async def test_bounded_async_html_fetch(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert html == "<h1>ok</h1>"
     assert base_url == "https://www.wnacg.com"
+
+
+@pytest.mark.asyncio
+async def test_gallery_rejects_unbounded_page_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    html = """
+        <div class="pic_box"><a href="/photos-view-id-1.html">one</a></div>
+        <div class="f_left paginator"><a>999</a></div>
+    """
+
+    async def fake_fetch_text(
+        _crawler_class: type[WnacgCrawler],
+        _client: AsyncSession[Response],
+        _path: str,
+        **_kwargs: object,
+    ) -> tuple[str, str]:
+        return html, "https://www.wnacg.com"
+
+    def fake_client(_crawler_class: type[WnacgCrawler]) -> AsyncSession[Response]:
+        return cast(AsyncSession[Response], _AsyncClient())
+
+    monkeypatch.setattr(cfg, "max_gallery_pages", 10)
+    monkeypatch.setattr(WnacgCrawler, "get_client", classmethod(fake_client))
+    monkeypatch.setattr(WnacgCrawler, "fetch_text", classmethod(fake_fetch_text))
+
+    with pytest.raises(CrawlError, match="page count"):
+        await WnacgCrawler.get_image_view_links("1")

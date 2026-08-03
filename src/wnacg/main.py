@@ -1,6 +1,8 @@
 """Application entry point for WNACG Downloader."""
 
 import sys
+import time
+from collections.abc import Callable
 
 
 def main() -> int:
@@ -9,37 +11,7 @@ def main() -> int:
     from wnacg.infrastructure.paths import initialize_paths
 
     initialize_paths()
-    from wnacg.infrastructure.logger import complete_logging, configure_logging
-
-    configure_logging()
-    from wnacg.infrastructure.config import cfg, initialize_config
-
-    initialize_config()
-    from wnacg.infrastructure.database import initialize_database
-
-    initialize_database()
-    if smoke_test_requested:
-        from wnacg.infrastructure.paths import DATA_DIR
-
-        cfg.download_dir = str(DATA_DIR / "downloads")
-
-    from PySide6.QtCore import QLockFile, Qt
-    from PySide6.QtWidgets import QApplication
-    from qfluentwidgets import Theme, setTheme
-
-    from wnacg.application.downloader import DownloaderWorker
-    from wnacg.infrastructure.database import task_repository
-    from wnacg.ui.components.cover_manager import cover_manager
-    from wnacg.ui.main_window import MainWindow
-
-    downloader_manager = DownloaderWorker(task_repository)
-    downloader_manager.prepare()
-
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
-    application_arguments = [argument for argument in sys.argv if argument != "--smoke-test"]
-    application = QApplication(application_arguments)
-    setTheme(Theme.AUTO)
+    from PySide6.QtCore import QLockFile
 
     from wnacg.infrastructure.paths import DATA_DIR
 
@@ -48,27 +20,64 @@ def main() -> int:
     if not instance_lock.tryLock(100):
         return 2
 
+    complete_logging_callback: Callable[[], None] | None = None
     try:
-        window = MainWindow(downloader_manager, task_repository)
+        from wnacg.infrastructure.logger import complete_logging, configure_logging
+
+        configure_logging()
+        complete_logging_callback = complete_logging
+        from wnacg.infrastructure.config import cfg, initialize_config
+
+        initialize_config()
+        from wnacg.infrastructure.database import SQLiteTaskRepository, initialize_database
+
+        initialize_database()
+        if smoke_test_requested:
+            cfg.download_dir = str(DATA_DIR / "downloads")
+
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+        from qfluentwidgets import Theme, setTheme
+
+        from wnacg.application.downloader import DownloaderWorker
+        from wnacg.ui.components.cover_manager import CoverManagerClass
+        from wnacg.ui.main_window import MainWindow
+
+        task_repository = SQLiteTaskRepository()
+        cover_manager = CoverManagerClass()
+        downloader_manager = DownloaderWorker(task_repository)
+        downloader_manager.prepare()
+
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+        application_arguments = [argument for argument in sys.argv if argument != "--smoke-test"]
+        application = QApplication(application_arguments)
+        setTheme(Theme.AUTO)
+
+        window = MainWindow(downloader_manager, task_repository, cover_manager)
+
+        def stop_services() -> None:
+            shutdown_deadline = time.monotonic() + 20.0
+            downloader_manager.stop(shutdown_deadline)
+            cover_manager.stop(shutdown_deadline)
+            window.stop_workers(shutdown_deadline)
+
         if smoke_test_requested:
             window.trayIcon.hide()
             window.deleteLater()
             application.processEvents()
-            cover_manager.stop()
-            downloader_manager.stop()
+            stop_services()
             return 0
 
         window.show()
 
-        application.aboutToQuit.connect(downloader_manager.stop)
-        application.aboutToQuit.connect(cover_manager.stop)
-        application.aboutToQuit.connect(window.stop_workers)
+        application.aboutToQuit.connect(stop_services)
         downloader_manager.start()
 
         return application.exec()
     finally:
         instance_lock.unlock()
-        complete_logging()
+        if complete_logging_callback is not None:
+            complete_logging_callback()
 
 
 if __name__ == "__main__":

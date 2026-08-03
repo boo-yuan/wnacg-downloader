@@ -1,10 +1,11 @@
 """Search, pagination, preload, and gallery-card presentation."""
+# pyright: reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import time
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, Signal
+from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, QThreadPool, Signal
 from PySide6.QtGui import QAction, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -26,6 +27,7 @@ from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import Comic, DownloadTask
 from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.ui.components.comic_card import ComicCard
+from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
 
 
@@ -67,11 +69,15 @@ class HomeInterface(QWidget):
         self,
         downloader: DownloaderWorker,
         repository: TaskRepository,
+        cover_manager: CoverManagerClass,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent=parent)
         self._downloader = downloader
         self._repository = repository
+        self._cover_manager = cover_manager
+        self._state_pool = QThreadPool(self)
+        self._state_pool.setMaxThreadCount(4)
         self.setObjectName("HomeInterface")
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
@@ -517,7 +523,13 @@ class HomeInterface(QWidget):
             self.scrollArea.show()
 
         for comic in results:
-            card = ComicCard(comic, self._repository, self.scrollWidget)
+            card = ComicCard(
+                comic,
+                self._repository,
+                self._cover_manager,
+                self._state_pool,
+                self.scrollWidget,
+            )
             card.downloadClicked.connect(self._on_download_clicked)
             self.flowLayout.addWidget(card)
             self.card_map[comic.aid] = card
@@ -532,17 +544,20 @@ class HomeInterface(QWidget):
         self.bottomWidget.setEnabled(True)
         InfoBar.error("搜索失败", f"网络请求失败：{err_msg}", parent=self, position=InfoBarPosition.TOP_RIGHT)
 
-    def stop_workers(self) -> None:
+    def stop_workers(self, deadline: float | None = None) -> None:
         """Request interruption and join all search threads during application shutdown."""
         candidates = [self.worker, *self.workers.values(), *self._old_workers]
         workers = list(dict.fromkeys(worker for worker in candidates if worker is not None))
         for worker in workers:
             worker.requestInterruption()
-        deadline = time.monotonic() + 16.0
+        shutdown_deadline = deadline or (time.monotonic() + 16.0)
         for worker in workers:
-            remaining_milliseconds = max(0, int((deadline - time.monotonic()) * 1_000))
+            remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
             if worker.isRunning() and not worker.wait(remaining_milliseconds):
                 worker.setParent(None)
+        self._state_pool.clear()
+        remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
+        self._state_pool.waitForDone(remaining_milliseconds)
 
     def _on_download_clicked(self, comic: Comic) -> None:
         self._downloader.add_task(comic)

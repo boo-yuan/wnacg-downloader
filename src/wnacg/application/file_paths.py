@@ -55,9 +55,21 @@ def archive_path(source_directory: Path) -> Path:
 
 
 def validated_task_directory(task_path: Path, download_root: Path) -> Path:
-    """Validate that a destructive task path is a direct child of its recorded root."""
+    """Return a direct child path that is not a symlink or directory junction."""
     resolved_root = download_root.expanduser().resolve(strict=False)
-    resolved_task = task_path.expanduser().resolve(strict=False)
-    if resolved_task == resolved_root or resolved_task.parent != resolved_root:
-        raise ValueError(f"Unsafe task directory outside recorded root: {resolved_task}")
-    return resolved_task
+    expanded_task = task_path.expanduser()
+    resolved_parent = expanded_task.parent.resolve(strict=False)
+    if not expanded_task.name or resolved_parent != resolved_root:
+        raise ValueError(f"Unsafe task directory outside recorded root: {expanded_task}")
+
+    safe_task = resolved_root / expanded_task.name
+    if safe_task.is_symlink() or safe_task.is_junction():
+        raise ValueError(f"Unsafe task directory is a filesystem link: {safe_task}")
+    return safe_task
+
+
+def prepare_task_directory(task_path: Path, download_root: Path) -> Path:
+    """Create and revalidate an application-owned task directory before writes."""
+    safe_task = validated_task_directory(task_path, download_root)
+    safe_task.mkdir(parents=True, exist_ok=True)
+    return validated_task_directory(safe_task, download_root)

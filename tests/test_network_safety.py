@@ -7,10 +7,25 @@ from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
     ensure_public_https_url,
     ensure_public_https_url_sync,
+    ensure_public_peer_address,
     read_limited_async_chunks,
     read_limited_chunks,
     validate_public_https_url,
 )
+
+type AddressInfo = tuple[int, int, int, str, tuple[str, int]]
+
+
+def _resolved_address(address: str) -> list[AddressInfo]:
+    return [(2, 1, 6, "", (address, 443))]
+
+
+def _public_getaddrinfo(*_args: object, **_kwargs: object) -> list[AddressInfo]:
+    return _resolved_address("93.184.216.34")
+
+
+def _private_getaddrinfo(*_args: object, **_kwargs: object) -> list[AddressInfo]:
+    return _resolved_address("127.0.0.1")
 
 
 @pytest.mark.parametrize(
@@ -63,7 +78,7 @@ async def test_async_byte_limit() -> None:
 def test_synchronous_dns_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "socket.getaddrinfo",
-        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        _public_getaddrinfo,
     )
     assert ensure_public_https_url_sync("https://example.com/file") == "https://example.com/file"
 
@@ -72,7 +87,13 @@ def test_synchronous_dns_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_async_dns_rejects_private_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "socket.getaddrinfo",
-        lambda *_args, **_kwargs: [(2, 1, 6, "", ("127.0.0.1", 443))],
+        _private_getaddrinfo,
     )
     with pytest.raises(UnsafeNetworkTargetError, match="non-public"):
         await ensure_public_https_url("https://example.com/file")
+
+
+def test_actual_direct_peer_must_be_public() -> None:
+    ensure_public_peer_address("93.184.216.34")
+    with pytest.raises(UnsafeNetworkTargetError, match="not public"):
+        ensure_public_peer_address("127.0.0.1")

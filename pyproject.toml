@@ -71,19 +71,16 @@ build = [
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["src"]
+include = ["src", "tests"]
 reportMissingTypeStubs = false
-reportUnknownArgumentType = false
-reportUnknownLambdaType = false
-reportUnknownMemberType = false
-reportUnknownVariableType = false
 reportUntypedBaseClass = false
+reportPrivateUsage = false
 
 [tool.coverage.run]
 branch = true
-source = ["wnacg.application", "wnacg.domain", "wnacg.infrastructure"]
+source = ["wnacg"]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-fail_under = 70
+fail_under = 55

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from wnacg.domain.models import Comic, DownloadTask, TaskStatus, validate_status_transition
+from wnacg.domain.models import CANCELLABLE_TASK_STATUSES, Comic, DownloadTask, TaskStatus, validate_status_transition
 
 
 def test_comic_rejects_path_like_aid() -> None:
@@ -48,3 +48,6 @@ def test_status_transition_rejects_impossible_jump() -> None:
     with pytest.raises(ValueError):
         validate_status_transition(TaskStatus.PAUSED, TaskStatus.COMPLETED)
     validate_status_transition(TaskStatus.PAUSED, TaskStatus.PENDING)
+    assert TaskStatus.COMPLETED not in CANCELLABLE_TASK_STATUSES
+    with pytest.raises(ValueError):
+        validate_status_transition(TaskStatus.COMPLETED, TaskStatus.CANCELED)

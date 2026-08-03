@@ -1,4 +1,5 @@
 """Download queue presentation and user commands."""
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 from pathlib import Path
 from typing import cast
@@ -27,7 +28,7 @@ from qfluentwidgets import FluentIcon as FIF
 from wnacg.application.downloader import DownloaderWorker
 from wnacg.application.file_paths import archive_path
 from wnacg.application.ports import TaskRepository
-from wnacg.domain.models import DownloadTask, TaskStatus
+from wnacg.domain.models import CANCELLABLE_TASK_STATUSES, DownloadTask, TaskStatus
 from wnacg.infrastructure.config import cfg
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
@@ -494,7 +495,8 @@ class DownloadInterface(QWidget):
         task_ids = [
             item.task.id
             for item in items
-            if hasattr(item, "task") and item.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)
+            if hasattr(item, "task")
+            and item.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.PENDING)
         ]
         if task_ids:
             self._downloader.resume_tasks(task_ids)
@@ -511,7 +513,9 @@ class DownloadInterface(QWidget):
         self.scrollWidget.clear_selection()
 
     def _bulk_cancel(self, items: list[DownloadItemCard]) -> None:
-        valid_items = [item for item in items if hasattr(item, "task") and item.task.status != TaskStatus.CANCELED]
+        valid_items = [
+            item for item in items if hasattr(item, "task") and item.task.status in CANCELLABLE_TASK_STATUSES
+        ]
         if not valid_items:
             return
 
@@ -570,7 +574,7 @@ class DownloadInterface(QWidget):
             )
 
     def _cancel_all(self) -> None:
-        valid_items = [card for card in self.task_cards.values() if card.task.status != TaskStatus.CANCELED]
+        valid_items = [card for card in self.task_cards.values() if card.task.status in CANCELLABLE_TASK_STATUSES]
         if not valid_items:
             return
 

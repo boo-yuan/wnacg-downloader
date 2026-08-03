@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 from concurrent.futures import Future
 from io import BytesIO
 from pathlib import Path
@@ -102,7 +103,7 @@ class _ImageResponse:
     def raise_for_status(self) -> None:
         """Represent a successful response."""
 
-    async def aiter_content(self, chunk_size: int) -> object:
+    async def aiter_content(self, chunk_size: int) -> AsyncIterator[bytes]:
         """Yield the payload using the client response protocol."""
         del chunk_size
         yield self._payload
@@ -182,7 +183,7 @@ def test_pause_resume_and_cancel_commands_update_repository(tmp_path: Path) -> N
         worker._loop.close()
 
 
-def test_delete_task_removes_only_validated_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_delete_task_preserves_unowned_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cfg, "delete_files_on_cancel", True)
     task_path = tmp_path / "Four [4]"
     task_path.mkdir()
@@ -201,8 +202,30 @@ def test_delete_task_removes_only_validated_artifacts(monkeypatch: pytest.Monkey
     DownloaderWorker(repository).delete_tasks([task.id, "already-missing"], delete_files=True)
 
     assert repository.get_task(task.id) is None
-    assert not task_path.exists()
+    assert task_path.exists()
+    assert (task_path / "partial.jpg").read_bytes() == b"partial"
     assert not zip_path.exists()
+
+
+def test_cancel_completed_task_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cfg, "delete_files_on_cancel", True)
+    task_path = tmp_path / "Completed [8]"
+    task_path.mkdir()
+    completed_file = task_path / "0001.jpg"
+    completed_file.write_bytes(b"completed")
+    task = DownloadTask(
+        id="completed-protected",
+        comic=Comic(aid="8", title="Completed"),
+        status=TaskStatus.COMPLETED,
+        save_path=str(task_path),
+        download_root=str(tmp_path),
+    )
+    repository = MemoryRepository([task])
+
+    DownloaderWorker(repository).cancel_task(task.id)
+
+    assert repository.get_task(task.id) is task
+    assert completed_file.read_bytes() == b"completed"
 
 
 @pytest.mark.asyncio
@@ -309,3 +332,109 @@ async def test_download_image_streams_valid_payload_and_persists_progress(
     assert task.progress == 1.0
     assert repository.images[task.id][0]["status"] == "downloaded"
     assert (tmp_path / "0001-one.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_raw_url_resolution_retries_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from wnacg.application import downloader
+    from wnacg.infrastructure.crawler import WnacgCrawler
+
+    payload_buffer = BytesIO()
+    Image.new("RGB", (8, 8), "purple").save(payload_buffer, format="JPEG")
+    payload = payload_buffer.getvalue()
+    attempts = 0
+
+    async def resolve_raw_url(_view_url: str, _client: AsyncSession[Response] | None = None) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary DNS failure")
+        return "https://1.1.1.1/retried.jpg"
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(WnacgCrawler, "get_raw_image_url", resolve_raw_url)
+    monkeypatch.setattr(downloader.asyncio, "sleep", no_delay)
+    task = DownloadTask(
+        id="retry-resolution",
+        comic=Comic(aid="9", title="Retry"),
+        save_path=str(tmp_path),
+        download_root=str(tmp_path.parent),
+        total_images=1,
+    )
+    image = ImageRecord(
+        task_id=task.id,
+        image_index=0,
+        view_url="https://www.wnacg.com/view-1",
+        raw_url="",
+        status="pending",
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [image]
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(1)
+
+    succeeded = await worker._download_image(
+        client=cast(AsyncSession[Response], _ImageClient(payload)),
+        task=task,
+        image=image,
+        options=DownloadOptions(delay_seconds=0.0),
+        cancel_event=asyncio.Event(),
+        byte_budget=TaskByteBudget(1_000_000),
+    )
+
+    assert succeeded
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_processed_output_cannot_exceed_task_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from wnacg.application import downloader
+
+    payload_buffer = BytesIO()
+    Image.new("RGB", (8, 8), "white").save(payload_buffer, format="PNG")
+    payload = payload_buffer.getvalue()
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(downloader.asyncio, "sleep", no_delay)
+    task = DownloadTask(
+        id="processed-budget",
+        comic=Comic(aid="10", title="Budget"),
+        save_path=str(tmp_path),
+        download_root=str(tmp_path.parent),
+        total_images=1,
+    )
+    image = ImageRecord(
+        task_id=task.id,
+        image_index=0,
+        view_url="",
+        raw_url="https://1.1.1.1/one.jpg",
+        status="pending",
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [image]
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(1)
+    budget = TaskByteBudget(len(payload))
+
+    succeeded = await worker._download_image(
+        client=cast(AsyncSession[Response], _ImageClient(payload)),
+        task=task,
+        image=image,
+        options=DownloadOptions(delay_seconds=0.0),
+        cancel_event=asyncio.Event(),
+        byte_budget=budget,
+    )
+
+    assert not succeeded
+    assert budget.used_bytes == 0
+    assert not (tmp_path / "0001-one.jpg").exists()

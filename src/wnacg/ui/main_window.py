@@ -1,6 +1,8 @@
 """Main Fluent window, tray integration, and close behavior."""
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import contextlib
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent
@@ -22,6 +24,7 @@ from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import TaskStatus
 from wnacg.infrastructure.config import cfg
 from wnacg.infrastructure.logger import logger
+from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.views.download_interface import DownloadInterface
 from wnacg.ui.views.home_interface import HomeInterface
 from wnacg.ui.views.setting_interface import (
@@ -59,14 +62,19 @@ class ClosePromptDialog(MessageBoxBase):
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, downloader: DownloaderWorker, repository: TaskRepository) -> None:
+    def __init__(
+        self,
+        downloader: DownloaderWorker,
+        repository: TaskRepository,
+        cover_manager: CoverManagerClass,
+    ) -> None:
         super().__init__()
         self._downloader = downloader
         self._repository = repository
         self.initWindow()
 
         # 初始化子页面
-        self.homeInterface = HomeInterface(downloader, repository, self)
+        self.homeInterface = HomeInterface(downloader, repository, cover_manager, self)
         self.downloadInterface = DownloadInterface(downloader, repository, self)
         self.networkSettingInterface = NetworkSettingInterface(downloader.apply_runtime_limits, self)
         self.downloadSettingInterface = DownloadSettingInterface(self)
@@ -224,11 +232,12 @@ class MainWindow(FluentWindow):
 
         QApplication.quit()
 
-    def stop_workers(self) -> None:
+    def stop_workers(self, deadline: float | None = None) -> None:
         """Stop UI-owned background workers before application shutdown."""
-        self.homeInterface.stop_workers()
-        self.networkSettingInterface.stop_workers()
-        self.aboutSettingInterface.stop_workers()
+        shutdown_deadline = deadline or (time.monotonic() + 16.0)
+        self.homeInterface.stop_workers(shutdown_deadline)
+        self.networkSettingInterface.stop_workers(shutdown_deadline)
+        self.aboutSettingInterface.stop_workers(shutdown_deadline)
 
     def closeEvent(self, e: QCloseEvent) -> None:
         if cfg.show_close_prompt:

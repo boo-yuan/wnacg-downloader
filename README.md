@@ -35,7 +35,7 @@ uv run --locked python -m wnacg --smoke-test
 uv audit --locked --no-dev
 ```
 
-测试门禁要求应用核心分支覆盖率不低于 70%。`build.bat` 使用锁定的纯运行时与 build 依赖组生成 PyInstaller 单文件程序；`run.bat` 不安装开发依赖。提交前可执行 `uv run --locked pre-commit run --all-files`。
+测试门禁统计整个 `wnacg` 包（包括入口和 Qt UI），要求分支覆盖率不低于 55%；当前完整测试覆盖率约为 57%。`build.bat` 使用锁定的纯运行时与 build 依赖组生成 PyInstaller 单文件程序；`run.bat` 不安装开发依赖。提交前可执行 `uv run --locked pre-commit run --all-files`。
 
 CI 在 Python 3.12/3.13 上执行 Ruff、严格 Pyright、pytest、源码烟雾测试，并单独完成 PyInstaller 构建/EXE 烟雾测试、OSV 依赖审计和 CycloneDX SBOM 导出验证。第三方 Actions 使用完整提交 SHA 固定。
 

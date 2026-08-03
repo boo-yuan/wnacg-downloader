@@ -74,3 +74,33 @@ def test_reconcile_removes_only_stale_manifest_files(tmp_path: Path) -> None:
     assert not first.exists()
     assert second.exists()
     assert unrelated.exists()
+
+
+def test_redownload_without_packing_removes_stale_archive(tmp_path: Path) -> None:
+    output = tmp_path / "Gallery [2]"
+    output.mkdir()
+    first = output / "0001.jpg"
+    first.write_bytes(b"first")
+    reconcile_artifacts(
+        task_id="task-2",
+        source_directory=output,
+        current_files=[first],
+        pack_to_zip=True,
+        delete_originals=True,
+    )
+    final_archive = archive_path(output)
+    assert final_archive.exists()
+    assert (output / ".wnacg-manifest.json").exists()
+
+    replacement = output / "0001.jpg"
+    replacement.write_bytes(b"replacement")
+    reconcile_artifacts(
+        task_id="task-2",
+        source_directory=output,
+        current_files=[replacement],
+        pack_to_zip=False,
+        delete_originals=False,
+    )
+
+    assert not final_archive.exists()
+    assert replacement.exists()

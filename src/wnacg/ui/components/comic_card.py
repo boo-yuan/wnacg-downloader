@@ -1,4 +1,5 @@
 """Search-result card and bounded asynchronous task-state lookup."""
+# pyright: reportUnknownMemberType=false
 
 import re
 from pathlib import Path
@@ -12,7 +13,7 @@ from wnacg.application.file_paths import archive_path, task_directory
 from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import Comic, TaskStatus
 from wnacg.infrastructure.config import cfg
-from wnacg.ui.components.cover_manager import cover_manager
+from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
 
@@ -55,17 +56,22 @@ class _StateWorker(QRunnable):
         self.signals.finished.emit(self.generation, state, task is not None)
 
 
-_STATE_POOL = QThreadPool()
-_STATE_POOL.setMaxThreadCount(4)
-
-
 class ComicCard(ElevatedCardWidget):
     downloadClicked = Signal(Comic)
 
-    def __init__(self, comic: Comic, repository: TaskRepository, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        comic: Comic,
+        repository: TaskRepository,
+        cover_manager: CoverManagerClass,
+        state_pool: QThreadPool,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.comic = comic
         self._repository = repository
+        self._cover_manager = cover_manager
+        self._state_pool = state_pool
         self.setFixedWidth(220)
 
         self.vbox = QVBoxLayout(self)
@@ -135,7 +141,7 @@ class ComicCard(ElevatedCardWidget):
             self._load_cover()
 
     def _load_cover(self) -> None:
-        cover_manager.load(self.comic.cover_url, self._set_cover)
+        self._cover_manager.load(self.comic.cover_url, self._set_cover)
 
     def _set_cover(self, url: str, img: QImage) -> None:
         if url != self.comic.cover_url:
@@ -152,7 +158,7 @@ class ComicCard(ElevatedCardWidget):
         self._state_generation += 1
         worker = _StateWorker(self.comic, self._state_generation, self._repository)
         worker.signals.finished.connect(self._state_updated.emit)
-        _STATE_POOL.start(worker)
+        self._state_pool.start(worker)
 
     def _apply_download_state(self, generation: int, state: str, has_task: bool) -> None:
         if generation != self._state_generation:

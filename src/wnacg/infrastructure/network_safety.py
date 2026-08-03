@@ -11,6 +11,16 @@ class UnsafeNetworkTargetError(ValueError):
     """Raised when a URL could access a non-public or unexpected target."""
 
 
+def ensure_public_peer_address(address: str) -> None:
+    """Verify the address actually selected by the direct HTTP connection."""
+    try:
+        peer = ipaddress.ip_address(address)
+    except ValueError as error:
+        raise UnsafeNetworkTargetError(f"HTTP peer address is invalid: {address}") from error
+    if not peer.is_global:
+        raise UnsafeNetworkTargetError(f"HTTP peer address is not public: {address}")
+
+
 def validate_public_https_url(url: str, *, allowed_hosts: set[str] | None = None) -> str:
     """Validate an HTTPS URL before it reaches the HTTP adapter."""
     normalized = url.strip()

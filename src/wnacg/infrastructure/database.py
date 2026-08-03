@@ -196,6 +196,15 @@ def _task_from_row(row: sqlite3.Row) -> DownloadTask:
 def save_task(task: DownloadTask) -> None:
     """Insert or update a task without deleting its persisted image rows."""
     with _transaction() as connection:
+        existing = connection.execute("SELECT status FROM tasks WHERE id = ?", (task.id,)).fetchone()
+        if existing is not None:
+            validate_status_transition(TaskStatus(str(existing["status"])), task.status)
+        duplicate = connection.execute(
+            "SELECT id FROM tasks WHERE aid = ? AND id <> ? LIMIT 1",
+            (task.comic.aid, task.id),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError(f"Gallery {task.comic.aid} is already tracked by task {duplicate['id']}")
         connection.execute(
             """
             INSERT INTO tasks (
@@ -427,6 +436,3 @@ class SQLiteTaskRepository:
     get_images = staticmethod(get_images)
     update_image_raw_url = staticmethod(update_image_raw_url)
     update_image_status = staticmethod(update_image_status)
-
-
-task_repository = SQLiteTaskRepository()

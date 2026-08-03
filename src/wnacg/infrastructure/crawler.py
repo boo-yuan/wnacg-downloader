@@ -19,6 +19,7 @@ from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
     ensure_public_https_url,
     ensure_public_https_url_sync,
+    ensure_public_peer_address,
     read_limited_async_chunks,
     read_limited_chunks,
     validate_public_https_url,
@@ -83,6 +84,8 @@ class WnacgCrawler:
                     allowed_hosts=set(cls._mirrors()),
                 )
                 response = client.get(request_url, stream=True, **kwargs)
+                if cfg.proxy_mode is ProxyMode.DIRECT:
+                    ensure_public_peer_address(response.primary_ip)
                 response.raise_for_status()
                 ensure_public_https_url_sync(str(response.url), allowed_hosts=set(cls._mirrors()))
                 ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
@@ -119,6 +122,8 @@ class WnacgCrawler:
                     allowed_hosts=set(mirrors),
                 )
                 response = await client.get(request_url, stream=True, **kwargs)
+                if cfg.proxy_mode is ProxyMode.DIRECT:
+                    ensure_public_peer_address(response.primary_ip)
                 response.raise_for_status()
                 await ensure_public_https_url(str(response.url), allowed_hosts=set(mirrors))
                 ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
@@ -295,7 +300,9 @@ class WnacgCrawler:
             async with slot():
                 first_html, base_url = await cls.fetch_text(client, f"/photos-index-page-1-aid-{aid}.html")
             first_links, max_page = await asyncio.to_thread(cls._parse_view_page, first_html, base_url)
-            if max_page > cfg.max_gallery_images:
+            if len(first_links) > cfg.max_gallery_images:
+                raise CrawlError(f"Gallery image count exceeds configured limit: {len(first_links)}")
+            if max_page > cfg.max_gallery_pages:
                 raise CrawlError(f"Gallery page count exceeds configured limit: {max_page}")
 
             async def fetch_page(page_number: int) -> tuple[int, list[str]]:
@@ -311,9 +318,18 @@ class WnacgCrawler:
                 return page_number, links
 
             page_results: list[tuple[int, list[str]]] = []
-            async with asyncio.TaskGroup() as task_group:
-                tasks = [task_group.create_task(fetch_page(page)) for page in range(2, max_page + 1)]
-            page_results.extend(task.result() for task in tasks)
+            known_links = set(first_links)
+            page_batch_size = 32
+            for batch_start in range(2, max_page + 1, page_batch_size):
+                batch_end = min(max_page + 1, batch_start + page_batch_size)
+                async with asyncio.TaskGroup() as task_group:
+                    tasks = [task_group.create_task(fetch_page(page)) for page in range(batch_start, batch_end)]
+                batch_results = [task.result() for task in tasks]
+                page_results.extend(batch_results)
+                for _page, links in batch_results:
+                    known_links.update(links)
+                if len(known_links) > cfg.max_gallery_images:
+                    raise CrawlError(f"Gallery image count exceeds configured limit: {len(known_links)}")
 
         ordered_links = list(first_links)
         for _page, links in sorted(page_results):

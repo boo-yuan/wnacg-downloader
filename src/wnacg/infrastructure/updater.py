@@ -14,6 +14,7 @@ from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
     ensure_public_https_url,
+    ensure_public_peer_address,
     read_limited_async_chunks,
 )
 
@@ -82,6 +83,8 @@ class Updater:
             async with session as client:
                 await ensure_public_https_url(cls.API_URL, allowed_hosts={"api.github.com"})
                 response: Response = await client.get(cls.API_URL, headers=headers, stream=True)
+                if cfg.proxy_mode is ProxyMode.DIRECT:
+                    ensure_public_peer_address(response.primary_ip)
                 response.raise_for_status()
                 await ensure_public_https_url(str(response.url), allowed_hosts={"api.github.com"})
                 ensure_expected_content_type(response.headers, {"application/json"})

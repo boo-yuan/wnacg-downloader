@@ -85,3 +85,21 @@ def test_image_updates_progress_reset_and_delete(monkeypatch: pytest.MonkeyPatch
     database.delete_task(task.id)
     assert database.get_task(task.id) is None
     assert database.get_images(task.id) == []
+
+
+def test_save_task_enforces_status_transitions_and_unique_gallery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "tasks.db")
+    database.initialize_database()
+    first = DownloadTask(id="first", comic=Comic(aid="100", title="Title"))
+    database.save_task(first)
+
+    first.status = TaskStatus.COMPLETED
+    with pytest.raises(ValueError, match="Invalid task status transition"):
+        database.save_task(first)
+
+    duplicate = DownloadTask(id="duplicate", comic=Comic(aid="100", title="Duplicate"))
+    with pytest.raises(ValueError, match="already tracked"):
+        database.save_task(duplicate)

@@ -1,6 +1,7 @@
 """Manifest-based reconciliation and atomic archive creation for task artifacts."""
 
 import contextlib
+import re
 import uuid
 import zipfile
 from pathlib import Path
@@ -10,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from wnacg.application.file_paths import archive_path
 
 _MANIFEST_NAME = ".wnacg-manifest.json"
+_PARTIAL_DOWNLOAD_NAME = re.compile(r"^\.\d{4}\.[0-9a-f]{32}\.download$")
 
 
 class ArtifactManifest(BaseModel):
@@ -128,7 +130,33 @@ def reconcile_artifacts(
             validated = _validated_managed_file(source_directory, current_file.name)
             if validated.is_file():
                 validated.unlink()
-        _manifest_path(source_directory).unlink(missing_ok=True)
-        with contextlib.suppress(OSError):
-            # Preserve a directory containing files not owned by this task.
-            source_directory.rmdir()
+        # Keep the manifest directory as durable ownership metadata. A later
+        # redownload can then remove a stale archive when packing is disabled.
+
+
+def remove_owned_artifacts(
+    *,
+    task_id: str,
+    source_directory: Path,
+    expected_files: list[Path],
+) -> None:
+    """Remove only files attributable to a task and preserve unrelated content."""
+    owned_names = {path.name for path in expected_files if path.parent == source_directory}
+    previous = load_manifest(source_directory, task_id)
+    if previous is not None:
+        owned_names.update(previous.files)
+
+    if source_directory.is_dir():
+        for candidate in source_directory.iterdir():
+            if _PARTIAL_DOWNLOAD_NAME.fullmatch(candidate.name):
+                owned_names.add(candidate.name)
+
+    for owned_name in owned_names:
+        candidate = _validated_managed_file(source_directory, owned_name)
+        if candidate.is_file():
+            candidate.unlink()
+
+    _manifest_path(source_directory).unlink(missing_ok=True)
+    # The directory may contain user-owned or otherwise unrecognized content.
+    with contextlib.suppress(OSError):
+        source_directory.rmdir()
