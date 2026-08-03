@@ -15,6 +15,9 @@ dependencies = [
     "loguru>=0.7.3",
     "curl-cffi>=0.15.0",
     "pillow>=12.3.0",
+    "qasync>=0.28.0",
+    "sqlmodel>=0.0.39",
+    "aiosqlite>=0.22.1",
 ]
 
 [build-system]
@@ -35,3 +38,9 @@ ignore = []
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
