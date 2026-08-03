@@ -31,6 +31,14 @@ class MemoryRepository:
     def get_all_tasks(self) -> list[DownloadTask]:
         return list(self.tasks.values())
 
+    def get_tasks_page(self, offset: int, limit: int) -> list[DownloadTask]:
+        return list(self.tasks.values())[offset : offset + limit]
+
+    def count_tasks(self, statuses: frozenset[TaskStatus] | None = None) -> int:
+        if statuses is None:
+            return len(self.tasks)
+        return sum(task.status in statuses for task in self.tasks.values())
+
     def get_task(self, task_id: str) -> DownloadTask | None:
         return self.tasks.get(task_id)
 
@@ -147,6 +155,7 @@ def test_add_redownload_and_delete_task(monkeypatch: pytest.MonkeyPatch, tmp_pat
     task = worker.add_task(comic)
     assert task.status is TaskStatus.PAUSED
     assert Path(task.save_path).parent == tmp_path
+    assert Path(task.save_path).name == "Two"
 
     task.status = TaskStatus.COMPLETED
     task.set_progress(2, 2)
@@ -157,6 +166,48 @@ def test_add_redownload_and_delete_task(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     worker.delete_tasks([task.id], delete_files=False)
     assert repository.get_task(task.id) is None
+
+
+def test_same_title_tasks_use_numeric_suffix_without_gallery_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cfg, "download_dir", str(tmp_path))
+    monkeypatch.setattr(cfg, "auto_start_download", False)
+    repository = MemoryRepository()
+    worker = DownloaderWorker(repository)
+
+    first = worker.add_task(Comic(aid="100", title="Same title"))
+    second = worker.add_task(Comic(aid="200", title="Same title"))
+
+    assert Path(first.save_path).name == "Same title"
+    assert Path(second.save_path).name == "Same title (2)"
+    assert "100" not in Path(first.save_path).name
+    assert "200" not in Path(second.save_path).name
+
+
+def test_prepare_migrates_only_unmaterialized_legacy_paths(tmp_path: Path) -> None:
+    repository = MemoryRepository()
+    unused = DownloadTask(
+        id="unused",
+        comic=Comic(aid="100", title="Same title"),
+        save_path=str(tmp_path / "Same title [100]"),
+        download_root=str(tmp_path),
+    )
+    materialized = DownloadTask(
+        id="materialized",
+        comic=Comic(aid="200", title="Same title"),
+        save_path=str(tmp_path / "Same title [200]"),
+        download_root=str(tmp_path),
+    )
+    Path(materialized.save_path).mkdir()
+    repository.save_task(unused)
+    repository.save_task(materialized)
+
+    DownloaderWorker(repository).prepare()
+
+    assert Path(repository.tasks[unused.id].save_path).name == "Same title"
+    assert Path(repository.tasks[materialized.id].save_path).name == "Same title [200]"
 
 
 def test_pause_resume_and_cancel_commands_update_repository(tmp_path: Path) -> None:

@@ -11,12 +11,12 @@ from wnacg.application.file_paths import (
 )
 
 
-def test_task_directory_is_unique_and_safe(tmp_path: Path) -> None:
-    first = task_directory(tmp_path, "A/B:*?", "100")
-    second = task_directory(tmp_path, "A/B:*?", "101")
-    assert first != second
-    assert first.parent == tmp_path.resolve()
-    assert first.name.endswith("[100]")
+def test_task_directory_uses_safe_title_without_gallery_id(tmp_path: Path) -> None:
+    result = task_directory(tmp_path, "A/B:*?")
+
+    assert result.parent == tmp_path.resolve()
+    assert result.name == "AB"
+    assert "[" not in result.name
 
 
 def test_image_original_name_keeps_sequence_to_avoid_collision() -> None:

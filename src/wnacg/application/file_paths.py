@@ -29,11 +29,10 @@ def safe_component(value: str, fallback: str) -> str:
     return cleaned[:_MAX_COMPONENT_LENGTH].rstrip(". ") or fallback
 
 
-def task_directory(download_root: Path, title: str, aid: str) -> Path:
-    """Build a unique direct child path for a gallery task."""
-    safe_aid = safe_component(aid, "unknown")
-    safe_title = safe_component(title, safe_aid)
-    return download_root.expanduser().resolve() / f"{safe_title} [{safe_aid}]"
+def task_directory(download_root: Path, title: str) -> Path:
+    """Build the preferred title-only direct child path for a gallery task."""
+    safe_title = safe_component(title, "untitled")
+    return download_root.expanduser().resolve() / safe_title
 
 
 def image_base_name(index: int, raw_url: str, naming: str, naming_version: int) -> str:

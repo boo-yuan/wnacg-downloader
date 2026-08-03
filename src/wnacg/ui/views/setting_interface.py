@@ -2,13 +2,11 @@
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
 
 import asyncio
-import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from bs4 import BeautifulSoup
 from PySide6.QtCore import Qt, QThread, QUrl, Signal, SignalInstance
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import QFileDialog, QWidget
@@ -33,16 +31,17 @@ from qfluentwidgets import (
 from qfluentwidgets import FluentIcon as FIF
 
 from wnacg.domain.models import DownloadFormat, DownloadNaming
-from wnacg.infrastructure.config import AppConfig, ProxyMode, cfg
+from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.domain_discovery import DomainDiscoveryError, discover_official_domains
+from wnacg.infrastructure.http_streams import close_stream_response
 from wnacg.infrastructure.logger import LOG_PATH, logger
 from wnacg.infrastructure.network_safety import (
-    ensure_expected_content_type,
     ensure_public_https_url_sync,
     ensure_public_peer_address,
-    read_limited_chunks,
 )
 from wnacg.infrastructure.updater import Updater
+from wnacg.ui.worker_lifecycle import stop_qthread
 
 type SettingIcon = str | QIcon | FluentIconBase
 
@@ -133,52 +132,21 @@ class DoubleSpinBoxSettingCard(SettingCard):
 
 
 class DomainFetchWorker(QThread):
-    finished_signal = Signal(list)
+    finished_signal = Signal(list, str)
 
     def run(self) -> None:
         try:
             domains = self.fetch()
-            self.finished_signal.emit(domains)
+            self.finished_signal.emit(domains, "")
+        except DomainDiscoveryError as error:
+            logger.warning("Domain discovery failed", error=str(error))
+            self.finished_signal.emit([], str(error))
         except Exception as error:
             logger.warning("Domain discovery failed", error=str(error))
-            self.finished_signal.emit([])
+            self.finished_signal.emit([], "获取官方域名时发生错误，请稍后重试；当前列表未更改")
 
     def fetch(self) -> list[str]:
-        domains: list[str] = []
-        try:
-            discovery_url = ensure_public_https_url_sync("https://wnacg01.link/")
-            with WnacgCrawler.get_sync_client() as client:
-                r = client.get(discovery_url, timeout=10.0, stream=True)
-                if cfg.proxy_mode is ProxyMode.DIRECT:
-                    ensure_public_peer_address(r.primary_ip)
-                if r.status_code == 200:
-                    ensure_public_https_url_sync(str(r.url), allowed_hosts={"wnacg01.link"})
-                    ensure_expected_content_type(r.headers, {"text/html", "application/xhtml+xml"})
-                    chunks = cast(
-                        Iterable[bytes],
-                        r.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
-                    )
-                    html = read_limited_chunks(chunks, cfg.max_html_bytes).decode(
-                        r.encoding or "utf-8",
-                        errors="replace",
-                    )
-                    soup = BeautifulSoup(html, "html.parser")
-                    lis = soup.select(".content-top ul li")
-                    if len(lis) > 3:
-                        lis = lis[2:-1]
-
-                    for li in lis:
-                        a = li.find("a")
-                        text = a.text.replace("\xa0", " ").strip() if a else li.text.replace("\xa0", " ").strip()
-
-                        text = text.replace("https://", "").replace("http://", "").replace("/", "").strip()
-                        if text and re.fullmatch(r"(?:www\.)?wnacg(?:[a-z0-9-]*\.)[a-z]{2,}", text, re.IGNORECASE):
-                            domain = AppConfig.validate_domain(text)
-                            if domain not in domains:
-                                domains.append(domain)
-        except Exception as error:
-            logger.warning("Official domain list parsing failed", error=str(error))
-        return domains
+        return discover_official_domains()
 
 
 class UpdateCheckWorker(QThread):
@@ -208,15 +176,22 @@ class NetworkTestWorker(QThread):
                 domain = cfg.domain if cfg.domain.startswith("http") else f"https://{cfg.domain}"
                 domain = ensure_public_https_url_sync(domain, allowed_hosts={cfg.domain})
                 r = s.get(domain, timeout=15.0, stream=True)
-                if cfg.proxy_mode is ProxyMode.DIRECT:
-                    ensure_public_peer_address(r.primary_ip)
-                ensure_public_https_url_sync(str(r.url), allowed_hosts=set(cfg.backup_domains))
+                try:
+                    if cfg.proxy_mode is ProxyMode.DIRECT:
+                        ensure_public_peer_address(r.primary_ip)
+                    ensure_public_https_url_sync(
+                        str(r.url),
+                        allowed_hosts={cfg.domain, *cfg.backup_domains},
+                    )
+                    status_code = r.status_code
+                finally:
+                    close_stream_response(r)
 
             elapsed = time.time() - start_time
-            if r.status_code == 200:
+            if status_code == 200:
                 self.finished_signal.emit(True, f"连接成功！耗时: {elapsed:.2f}s")
             else:
-                self.finished_signal.emit(False, f"HTTP状态码异常: {r.status_code}")
+                self.finished_signal.emit(False, f"HTTP状态码异常: {status_code}")
         except Exception as e:
             self.finished_signal.emit(False, f"连接失败: {e!s}")
 
@@ -231,6 +206,11 @@ class BaseSettingInterface(ScrollArea):
         self.setWidget(self.scrollWidget)
         self.setWidgetResizable(True)
         self.setStyleSheet("QScrollArea, .QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def _retire_worker(self, attribute: str, worker: QThread) -> None:
+        """Clear a finished worker reference before Qt deletes its C++ object."""
+        if getattr(self, attribute, None) is worker:
+            setattr(self, attribute, None)
 
 
 class NetworkSettingInterface(BaseSettingInterface):
@@ -308,9 +288,12 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.testNetworkCard.button.setEnabled(False)
         self.testNetworkCard.button.setText("测试中...")
 
-        self.test_worker = NetworkTestWorker()
-        self.test_worker.finished_signal.connect(self._on_test_network_finished)
-        self.test_worker.start()
+        worker = NetworkTestWorker(self)
+        self.test_worker = worker
+        worker.finished_signal.connect(self._on_test_network_finished)
+        worker.finished.connect(lambda: self._retire_worker("test_worker", worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _on_test_network_finished(self, success: bool, msg: str) -> None:
         self.testNetworkCard.button.setEnabled(True)
@@ -425,27 +408,29 @@ class NetworkSettingInterface(BaseSettingInterface):
         shutdown_deadline = deadline or (time.monotonic() + 16.0)
         for attribute in ("test_worker", "fetch_worker"):
             worker = cast(QThread | None, getattr(self, attribute, None))
-            if worker is not None:
-                worker.requestInterruption()
-                remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
-                if worker.isRunning() and not worker.wait(remaining_milliseconds):
-                    logger.warning("Settings worker did not stop", worker=attribute)
+            stop_qthread(worker, shutdown_deadline, name=attribute, join_after_timeout=True)
+            setattr(self, attribute, None)
 
     def _fetch_latest_domains(self) -> None:
         self.fetchDomainCard.button.setText("获取中...")
         self.fetchDomainCard.button.setEnabled(False)
-        self.fetch_worker = DomainFetchWorker(self)
-        self.fetch_worker.finished_signal.connect(self._on_domains_fetched)
-        self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
-        self.fetch_worker.start()
+        worker = DomainFetchWorker(self)
+        self.fetch_worker = worker
+        worker.finished_signal.connect(self._on_domains_fetched)
+        worker.finished.connect(lambda: self._retire_worker("fetch_worker", worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
-    def _on_domains_fetched(self, domains: list[str]) -> None:
+    def _on_domains_fetched(self, domains: list[str], error_message: str) -> None:
         self.fetchDomainCard.button.setText("获取")
         self.fetchDomainCard.button.setEnabled(True)
 
         if not domains:
             InfoBar.error(
-                "❌ 获取失败", "无法从发布页获取数据，请检查网络", parent=self.window(), position=InfoBarPosition.TOP
+                "❌ 获取失败",
+                error_message or "官方发布页没有返回可识别的漫画域名；当前列表未更改",
+                parent=self.window(),
+                position=InfoBarPosition.TOP,
             )
             return
 
@@ -703,10 +688,12 @@ class AboutSettingInterface(BaseSettingInterface):
     def _check_update(self) -> None:
         self.updateCard.button.setText("检查中...")
         self.updateCard.button.setEnabled(False)
-        self.updateWorker = UpdateCheckWorker(self)
-        self.updateWorker.finished_signal.connect(self._on_update_checked)
-        self.updateWorker.finished.connect(self.updateWorker.deleteLater)
-        self.updateWorker.start()
+        worker = UpdateCheckWorker(self)
+        self.updateWorker = worker
+        worker.finished_signal.connect(self._on_update_checked)
+        worker.finished.connect(lambda: self._retire_worker("updateWorker", worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _on_update_checked(self, result: dict[str, object]) -> None:
         self.updateCard.button.setText("检查更新")
@@ -744,8 +731,5 @@ class AboutSettingInterface(BaseSettingInterface):
         """Join the update checker before Qt object destruction."""
         shutdown_deadline = deadline or (time.monotonic() + 16.0)
         worker = cast(QThread | None, getattr(self, "updateWorker", None))
-        if worker is not None:
-            worker.requestInterruption()
-            remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
-            if worker.isRunning() and not worker.wait(remaining_milliseconds):
-                logger.warning("Update worker did not stop")
+        stop_qthread(worker, shutdown_deadline, name="updateWorker", join_after_timeout=True)
+        self.updateWorker = None

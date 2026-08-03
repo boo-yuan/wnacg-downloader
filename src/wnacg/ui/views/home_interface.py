@@ -29,6 +29,7 @@ from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.ui.components.comic_card import ComicCard
 from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.selectable_container import SelectableContainer
+from wnacg.ui.worker_lifecycle import stop_qthread
 
 
 class SearchWorker(QThread):
@@ -548,16 +549,16 @@ class HomeInterface(QWidget):
         """Request interruption and join all search threads during application shutdown."""
         candidates = [self.worker, *self.workers.values(), *self._old_workers]
         workers = list(dict.fromkeys(worker for worker in candidates if worker is not None))
-        for worker in workers:
-            worker.requestInterruption()
         shutdown_deadline = deadline or (time.monotonic() + 16.0)
-        for worker in workers:
-            remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
-            if worker.isRunning() and not worker.wait(remaining_milliseconds):
-                worker.setParent(None)
+        for index, worker in enumerate(workers):
+            stop_qthread(worker, shutdown_deadline, name=f"search_worker_{index}", join_after_timeout=True)
+        self.worker = None
+        self.workers.clear()
+        self._old_workers.clear()
         self._state_pool.clear()
         remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
-        self._state_pool.waitForDone(remaining_milliseconds)
+        if not self._state_pool.waitForDone(remaining_milliseconds):
+            self._state_pool.waitForDone()
 
     def _on_download_clicked(self, comic: Comic) -> None:
         self._downloader.add_task(comic)

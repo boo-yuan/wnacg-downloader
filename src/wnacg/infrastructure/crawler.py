@@ -14,6 +14,7 @@ from curl_cffi.requests import AsyncSession, Response, Session
 
 from wnacg.domain.models import Comic
 from wnacg.infrastructure.config import ProxyMode, cfg
+from wnacg.infrastructure.http_streams import close_async_stream_response, close_stream_response
 from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
@@ -84,20 +85,23 @@ class WnacgCrawler:
                     allowed_hosts=set(cls._mirrors()),
                 )
                 response = client.get(request_url, stream=True, **kwargs)
-                if cfg.proxy_mode is ProxyMode.DIRECT:
-                    ensure_public_peer_address(response.primary_ip)
-                response.raise_for_status()
-                ensure_public_https_url_sync(str(response.url), allowed_hosts=set(cls._mirrors()))
-                ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
-                content_length = int(response.headers.get("content-length", "0") or 0)
-                if content_length > cfg.max_html_bytes:
-                    raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
-                chunks = cast(
-                    Iterable[bytes],
-                    response.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
-                )
-                content = read_limited_chunks(chunks, cfg.max_html_bytes)
-                return content.decode(response.encoding or "utf-8", errors="replace"), base_url
+                try:
+                    if cfg.proxy_mode is ProxyMode.DIRECT:
+                        ensure_public_peer_address(response.primary_ip)
+                    response.raise_for_status()
+                    ensure_public_https_url_sync(str(response.url), allowed_hosts=set(cls._mirrors()))
+                    ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
+                    content_length = int(response.headers.get("content-length", "0") or 0)
+                    if content_length > cfg.max_html_bytes:
+                        raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
+                    chunks = cast(
+                        Iterable[bytes],
+                        response.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                    )
+                    content = read_limited_chunks(chunks, cfg.max_html_bytes)
+                    return content.decode(response.encoding or "utf-8", errors="replace"), base_url
+                finally:
+                    close_stream_response(response)
             except Exception as error:
                 failures.append(f"{domain}: {error}")
                 logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))
@@ -122,20 +126,23 @@ class WnacgCrawler:
                     allowed_hosts=set(mirrors),
                 )
                 response = await client.get(request_url, stream=True, **kwargs)
-                if cfg.proxy_mode is ProxyMode.DIRECT:
-                    ensure_public_peer_address(response.primary_ip)
-                response.raise_for_status()
-                await ensure_public_https_url(str(response.url), allowed_hosts=set(mirrors))
-                ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
-                content_length = int(response.headers.get("content-length", "0") or 0)
-                if content_length > cfg.max_html_bytes:
-                    raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
-                chunks = cast(
-                    AsyncIterator[bytes],
-                    response.aiter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
-                )
-                content = await read_limited_async_chunks(chunks, cfg.max_html_bytes)
-                return content.decode(response.encoding or "utf-8", errors="replace"), base_url
+                try:
+                    if cfg.proxy_mode is ProxyMode.DIRECT:
+                        ensure_public_peer_address(response.primary_ip)
+                    response.raise_for_status()
+                    await ensure_public_https_url(str(response.url), allowed_hosts=set(mirrors))
+                    ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
+                    content_length = int(response.headers.get("content-length", "0") or 0)
+                    if content_length > cfg.max_html_bytes:
+                        raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
+                    chunks = cast(
+                        AsyncIterator[bytes],
+                        response.aiter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                    )
+                    content = await read_limited_async_chunks(chunks, cfg.max_html_bytes)
+                    return content.decode(response.encoding or "utf-8", errors="replace"), base_url
+                finally:
+                    await close_async_stream_response(response)
             except Exception as error:
                 failures.append(f"{domain}: {error}")
                 logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))

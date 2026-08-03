@@ -182,8 +182,7 @@ class MainWindow(FluentWindow):
         from wnacg.domain.models import TaskStatus
 
         if status == TaskStatus.COMPLETED:
-            tasks = self._repository.get_all_tasks()
-            active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
+            active_count = self._repository.count_tasks(frozenset({TaskStatus.PENDING, TaskStatus.DOWNLOADING}))
 
             if active_count == 0:
                 from PySide6.QtCore import Qt
@@ -243,8 +242,7 @@ class MainWindow(FluentWindow):
         if cfg.show_close_prompt:
             from wnacg.domain.models import TaskStatus
 
-            tasks = self._repository.get_all_tasks()
-            active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
+            active_count = self._repository.count_tasks(frozenset({TaskStatus.PENDING, TaskStatus.DOWNLOADING}))
 
             w = ClosePromptDialog(active_count, self.window())
             if w.exec():

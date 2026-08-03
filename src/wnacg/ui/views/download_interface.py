@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QAction, QContextMenuEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
@@ -222,6 +222,8 @@ class DownloadItemCard(CardWidget):
 
 
 class DownloadInterface(QWidget):
+    _PAGE_SIZE = 100
+
     def __init__(
         self,
         downloader: DownloaderWorker,
@@ -288,11 +290,34 @@ class DownloadInterface(QWidget):
         self.scrollArea.setWidget(self.scrollWidget)
         self.vbox.addWidget(self.scrollArea)
 
+        self.paginationWidget = QWidget(self)
+        paginationLayout = QHBoxLayout(self.paginationWidget)
+        paginationLayout.setContentsMargins(0, 4, 0, 0)
+        paginationLayout.addStretch(1)
+        self.previousPageButton = PushButton("上一页", self.paginationWidget)
+        self.pageLabel = QLabel(self.paginationWidget)
+        self.pageLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pageLabel.setMinimumWidth(150)
+        self.nextPageButton = PushButton("下一页", self.paginationWidget)
+        self.previousPageButton.clicked.connect(self._show_previous_page)
+        self.nextPageButton.clicked.connect(self._show_next_page)
+        paginationLayout.addWidget(self.previousPageButton)
+        paginationLayout.addWidget(self.pageLabel)
+        paginationLayout.addWidget(self.nextPageButton)
+        paginationLayout.addStretch(1)
+        self.vbox.addWidget(self.paginationWidget)
+
         # Shortcut for Ctrl+A
         self.shortcut_select_all = QShortcut(QKeySequence("Ctrl+A"), self)
         self.shortcut_select_all.activated.connect(self.scrollWidget.select_all)
 
-        self.task_cards = {}
+        self.task_cards: dict[str, DownloadItemCard] = {}
+        self._current_page = 0
+        self._total_task_count = 0
+        self._page_refresh_timer = QTimer(self)
+        self._page_refresh_timer.setSingleShot(True)
+        self._page_refresh_timer.setInterval(50)
+        self._page_refresh_timer.timeout.connect(self._refresh_current_page)
 
         self._init_empty_state()
 
@@ -393,23 +418,57 @@ class DownloadInterface(QWidget):
         self.vbox.addWidget(self.emptyWidget, 1)
 
     def _update_empty_state(self) -> None:
-        has_tasks = len(self.task_cards)
+        has_tasks = self._total_task_count > 0
         self.commandBar.setVisible(bool(has_tasks))
         self.scrollArea.setVisible(bool(has_tasks))
+        self.paginationWidget.setVisible(bool(has_tasks))
         self.emptyWidget.setVisible(not has_tasks)
 
     def _load_existing_tasks(self) -> None:
-        tasks = self._repository.get_all_tasks()
-        for task in tasks:
-            self._on_task_added(task)
+        self._total_task_count = self._repository.count_tasks()
+        self._load_page(0)
+
+    def _load_page(self, page: int) -> None:
+        page_count = max(1, (self._total_task_count + self._PAGE_SIZE - 1) // self._PAGE_SIZE)
+        self._current_page = min(max(page, 0), page_count - 1)
+        self.scrollWidget.clear_selection()
+        for card in self.task_cards.values():
+            self.listLayout.removeWidget(card)
+            card.deleteLater()
+        self.task_cards.clear()
+
+        offset = self._current_page * self._PAGE_SIZE
+        for task in self._repository.get_tasks_page(offset, self._PAGE_SIZE):
+            self._create_task_card(task)
+
+        self.pageLabel.setText(f"第 {self._current_page + 1} / {page_count} 页 · 共 {self._total_task_count} 项")
+        self.previousPageButton.setEnabled(self._current_page > 0)
+        self.nextPageButton.setEnabled(self._current_page + 1 < page_count)
+        self.scrollArea.verticalScrollBar().setValue(0)
+        self._update_empty_state()
+
+    def _create_task_card(self, task: DownloadTask) -> None:
+        card = DownloadItemCard(task, self._downloader, self.scrollWidget)
+        self.listLayout.addWidget(card)
+        self.task_cards[task.id] = card
+
+    def _refresh_current_page(self) -> None:
+        self._total_task_count = self._repository.count_tasks()
+        self._load_page(self._current_page)
+
+    def _schedule_page_refresh(self) -> None:
+        self._page_refresh_timer.start()
+
+    def _show_previous_page(self) -> None:
+        self._load_page(self._current_page - 1)
+
+    def _show_next_page(self) -> None:
+        self._load_page(self._current_page + 1)
 
     def _on_task_added(self, task: DownloadTask) -> None:
         if task.id in self.task_cards:
             return
-        card = DownloadItemCard(task, self._downloader, self.scrollWidget)
-        self.listLayout.addWidget(card)
-        self.task_cards[task.id] = card
-        self._update_empty_state()
+        self._schedule_page_refresh()
 
     def _on_task_progress(self, task_id: str, downloaded: int, total: int) -> None:
         card = self.task_cards.get(task_id)
@@ -428,7 +487,7 @@ class DownloadInterface(QWidget):
                 self.task_cards.pop(task_id, None)
                 self.listLayout.removeWidget(card)
                 card.deleteLater()
-                self._update_empty_state()
+            self._schedule_page_refresh()
             return
         InfoBar.error(
             "删除失败",
@@ -536,9 +595,9 @@ class DownloadInterface(QWidget):
 
     def _start_all(self) -> None:
         task_ids = [
-            card.task.id
-            for card in self.task_cards.values()
-            if card.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.PENDING)
+            task.id
+            for task in self._repository.get_all_tasks()
+            if task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.PENDING)
         ]
         if task_ids:
             self._downloader.resume_tasks(task_ids)
@@ -551,9 +610,9 @@ class DownloadInterface(QWidget):
 
     def _pause_all(self) -> None:
         task_ids = [
-            card.task.id
-            for card in self.task_cards.values()
-            if card.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)
+            task.id
+            for task in self._repository.get_all_tasks()
+            if task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)
         ]
         if task_ids:
             self._downloader.pause_tasks(task_ids)
@@ -562,7 +621,7 @@ class DownloadInterface(QWidget):
             )
 
     def _clear_completed(self) -> None:
-        to_remove = [task_id for task_id, card in self.task_cards.items() if card.task.status == TaskStatus.COMPLETED]
+        to_remove = [task.id for task in self._repository.get_all_tasks() if task.status == TaskStatus.COMPLETED]
         if to_remove:
             self._downloader.delete_tasks(to_remove, delete_files=False)
         if to_remove:
@@ -574,12 +633,12 @@ class DownloadInterface(QWidget):
             )
 
     def _cancel_all(self) -> None:
-        valid_items = [card for card in self.task_cards.values() if card.task.status in CANCELLABLE_TASK_STATUSES]
-        if not valid_items:
+        valid_tasks = [task for task in self._repository.get_all_tasks() if task.status in CANCELLABLE_TASK_STATUSES]
+        if not valid_tasks:
             return
 
         if cfg.show_cancel_prompt:
-            w = CancelPromptDialog(len(valid_items), self.window())
+            w = CancelPromptDialog(len(valid_tasks), self.window())
             if not w.exec():
                 return
             cfg.delete_files_on_cancel = w.deleteFilesCheckbox.isChecked()
@@ -587,7 +646,7 @@ class DownloadInterface(QWidget):
                 cfg.show_cancel_prompt = False
             cfg.save()
 
-        to_remove = [card.task.id for card in valid_items]
+        to_remove = [task.id for task in valid_tasks]
 
         if to_remove:
             self._downloader.cancel_tasks(to_remove)

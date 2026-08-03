@@ -262,6 +262,37 @@ def get_all_tasks() -> list[DownloadTask]:
     return tasks
 
 
+def get_tasks_page(offset: int, limit: int) -> list[DownloadTask]:
+    """Return one bounded page of tasks in the same order as the full listing."""
+    if offset < 0 or limit < 1:
+        raise ValueError("Task page offset and limit must be positive")
+    with closing(_connect()) as connection:
+        rows = connection.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    tasks: list[DownloadTask] = []
+    for row in rows:
+        try:
+            tasks.append(_task_from_row(row))
+        except (ValueError, ValidationError) as error:
+            logger.error("Quarantining invalid persisted task from page", task_id=str(row["id"]), error=str(error))
+    return tasks
+
+
+def count_tasks(statuses: frozenset[TaskStatus] | None = None) -> int:
+    """Count tasks without materializing every persisted aggregate."""
+    with closing(_connect()) as connection:
+        if statuses is None:
+            row = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()
+            return int(row[0]) if row is not None else 0
+        if not statuses:
+            return 0
+        rows = connection.execute("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status").fetchall()
+        counts = {TaskStatus(str(status_row["status"])): int(status_row["count"]) for status_row in rows}
+        return sum(counts.get(status, 0) for status in statuses)
+
+
 def get_task(task_id: str) -> DownloadTask | None:
     """Return a task by identifier."""
     with closing(_connect()) as connection:
@@ -424,6 +455,8 @@ class SQLiteTaskRepository:
 
     save_task = staticmethod(save_task)
     get_all_tasks = staticmethod(get_all_tasks)
+    get_tasks_page = staticmethod(get_tasks_page)
+    count_tasks = staticmethod(count_tasks)
     get_task = staticmethod(get_task)
     get_task_by_aid = staticmethod(get_task_by_aid)
     update_task_status = staticmethod(update_task_status)

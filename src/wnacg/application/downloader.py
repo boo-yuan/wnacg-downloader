@@ -24,10 +24,12 @@ from wnacg.application.download_limits import (
     SpeedMonitor,
     TaskByteBudget,
     TokenBucket,
+    run_bounded,
 )
 from wnacg.application.file_paths import (
     archive_path,
     prepare_task_directory,
+    safe_component,
     task_directory,
     validated_task_directory,
 )
@@ -36,6 +38,7 @@ from wnacg.application.ports import ImageRecord, TaskRepository
 from wnacg.domain.models import CANCELLABLE_TASK_STATUSES, Comic, DownloadOptions, DownloadTask, TaskStatus
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.http_streams import close_async_stream_response
 from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
@@ -88,6 +91,8 @@ class DownloaderWorker(QThread):
         self._request_pacer = RequestPacer()
         self._monitor_task: asyncio.Task[None] | None = None
         self._progress_locks: dict[str, asyncio.Lock] = {}
+        self._reserved_task_paths: set[str] = set()
+        self._task_paths_initialized = False
         self._prepared = False
         self._stopping = False
 
@@ -100,6 +105,8 @@ class DownloaderWorker(QThread):
 
         # Check for deleted folders for completed tasks
         tasks = self._repository.get_all_tasks()
+        self._migrate_unused_legacy_task_paths(tasks)
+        self._initialize_task_paths(tasks)
         for task in tasks:
             if task.status == TaskStatus.COMPLETED:
                 save_path = Path(task.save_path)
@@ -121,6 +128,85 @@ class DownloaderWorker(QThread):
             delete_original_after_pack=cfg.delete_original_after_pack,
             naming_version=naming_version,
         )
+
+    @staticmethod
+    def _task_path_key(path: Path) -> str:
+        """Normalize a path for case-insensitive reservation checks on Windows."""
+        return str(path.resolve(strict=False)).casefold()
+
+    def _initialize_task_paths(self, tasks: list[DownloadTask] | None = None) -> None:
+        """Reserve persisted paths once so title collisions never merge task output."""
+        with self._lock:
+            if self._task_paths_initialized:
+                return
+            known_tasks = tasks if tasks is not None else self._repository.get_all_tasks()
+            self._reserved_task_paths.update(
+                self._task_path_key(Path(task.save_path)) for task in known_tasks if task.save_path
+            )
+            self._task_paths_initialized = True
+
+    def _migrate_unused_legacy_task_paths(self, tasks: list[DownloadTask]) -> None:
+        """Move only unmaterialized legacy ``title [aid]`` records to title-only paths."""
+        migration_candidates: list[tuple[DownloadTask, Path, Path]] = []
+        occupied_paths: set[str] = set()
+        for task in tasks:
+            old_path = Path(task.save_path)
+            download_root = Path(task.download_root or old_path.parent).expanduser().resolve()
+            safe_aid = safe_component(task.comic.aid, "unknown")
+            safe_title = safe_component(task.comic.title, safe_aid)
+            expected_legacy_path = download_root / f"{safe_title} [{safe_aid}]"
+            legacy_matches = self._task_path_key(old_path) == self._task_path_key(expected_legacy_path)
+            old_archive = archive_path(old_path)
+            has_artifacts = (
+                old_path.exists() or old_path.is_symlink() or old_archive.exists() or old_archive.is_symlink()
+            )
+            if legacy_matches and not has_artifacts:
+                migration_candidates.append((task, old_path, download_root))
+            else:
+                occupied_paths.add(self._task_path_key(old_path))
+
+        for task, old_path, download_root in migration_candidates:
+            base_path = task_directory(download_root, task.comic.title)
+            candidate = base_path
+            suffix = 2
+            while (
+                self._task_path_key(candidate) in occupied_paths
+                or candidate.exists()
+                or candidate.is_symlink()
+                or archive_path(candidate).exists()
+                or archive_path(candidate).is_symlink()
+            ):
+                candidate = base_path.with_name(f"{base_path.name} ({suffix})")
+                suffix += 1
+            previous_path = task.save_path
+            task.save_path = str(candidate)
+            task.download_root = str(download_root)
+            try:
+                self._repository.save_task(task)
+            except Exception as error:
+                task.save_path = previous_path
+                occupied_paths.add(self._task_path_key(old_path))
+                logger.warning("Legacy task path migration failed", task_id=task.id, error=str(error))
+                continue
+            occupied_paths.add(self._task_path_key(candidate))
+            logger.info("Migrated unused legacy task path", task_id=task.id)
+
+    def _reserve_task_directory(self, download_root: Path, title: str) -> Path:
+        """Reserve a title-only path, adding a numeric suffix for genuine collisions."""
+        self._initialize_task_paths()
+        base_path = task_directory(download_root, title)
+        candidate = base_path
+        suffix = 2
+        with self._lock:
+            while (
+                self._task_path_key(candidate) in self._reserved_task_paths
+                or candidate.exists()
+                or archive_path(candidate).exists()
+            ):
+                candidate = base_path.with_name(f"{base_path.name} ({suffix})")
+                suffix += 1
+            self._reserved_task_paths.add(self._task_path_key(candidate))
+        return candidate
 
     def add_task(self, comic: Comic) -> DownloadTask:
         existing = self._repository.get_task_by_aid(comic.aid)
@@ -149,7 +235,7 @@ class DownloaderWorker(QThread):
 
         task_id = str(uuid.uuid4())
         download_root = Path(cfg.download_dir).expanduser().resolve()
-        save_path = task_directory(download_root, comic.title, comic.aid)
+        save_path = self._reserve_task_directory(download_root, comic.title)
 
         initial_status = TaskStatus.PENDING if cfg.auto_start_download else TaskStatus.PAUSED
         task = DownloadTask(
@@ -160,7 +246,12 @@ class DownloaderWorker(QThread):
             options=self._options_from_config(),
             status=initial_status,
         )
-        self._repository.save_task(task)
+        try:
+            self._repository.save_task(task)
+        except Exception:
+            with self._lock:
+                self._reserved_task_paths.discard(self._task_path_key(save_path))
+            raise
         self.signals.task_added.emit(task)
         self._update_badge()
 
@@ -319,8 +410,7 @@ class DownloaderWorker(QThread):
         self.cancel_tasks([task_id])
 
     def _update_badge(self) -> None:
-        tasks = self._repository.get_all_tasks()
-        active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
+        active_count = self._repository.count_tasks(frozenset({TaskStatus.PENDING, TaskStatus.DOWNLOADING}))
         self.signals.badge_update.emit(active_count)
 
     def apply_runtime_limits(self) -> None:
@@ -410,37 +500,40 @@ class DownloaderWorker(QThread):
                     await self._request_pacer.wait(options.delay_seconds * jitter)
                 async with self._connection_limiter.slot():
                     response = await client.get(raw_url, timeout=30.0, stream=True)
-                    if cfg.proxy_mode is ProxyMode.DIRECT:
-                        ensure_public_peer_address(response.primary_ip)
-                    response.raise_for_status()
-                    await ensure_public_https_url(str(response.url))
-                    ensure_expected_content_type(response.headers, _IMAGE_CONTENT_TYPES)
-                    content_length = int(response.headers.get("content-length", "0") or 0)
-                    if content_length > maximum_bytes:
-                        raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
-                    downloaded_bytes = 0
-                    with temporary_download.open("wb") as output:
-                        chunks = cast(
-                            AsyncIterator[bytes],
-                            response.aiter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
-                        )
-                        async for chunk in chunks:
-                            if cancel_event.is_set():
-                                await byte_budget.release(reserved_bytes)
-                                return False
-                            downloaded_bytes += len(chunk)
-                            if downloaded_bytes > maximum_bytes:
-                                raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
-                            await byte_budget.reserve(len(chunk))
-                            reserved_bytes += len(chunk)
-                            await active_disk_guard.record_write(
-                                task.save_path,
-                                len(chunk),
-                                cfg.minimum_free_space_bytes,
+                    try:
+                        if cfg.proxy_mode is ProxyMode.DIRECT:
+                            ensure_public_peer_address(response.primary_ip)
+                        response.raise_for_status()
+                        await ensure_public_https_url(str(response.url))
+                        ensure_expected_content_type(response.headers, _IMAGE_CONTENT_TYPES)
+                        content_length = int(response.headers.get("content-length", "0") or 0)
+                        if content_length > maximum_bytes:
+                            raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
+                        downloaded_bytes = 0
+                        with temporary_download.open("wb") as output:
+                            chunks = cast(
+                                AsyncIterator[bytes],
+                                response.aiter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
                             )
-                            output.write(chunk)
-                            await self._speed_monitor.add(len(chunk))
-                            await self._token_bucket.consume(len(chunk), cfg.global_speed_limit * 1024)
+                            async for chunk in chunks:
+                                if cancel_event.is_set():
+                                    await byte_budget.release(reserved_bytes)
+                                    return False
+                                downloaded_bytes += len(chunk)
+                                if downloaded_bytes > maximum_bytes:
+                                    raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
+                                await byte_budget.reserve(len(chunk))
+                                reserved_bytes += len(chunk)
+                                await active_disk_guard.record_write(
+                                    task.save_path,
+                                    len(chunk),
+                                    cfg.minimum_free_space_bytes,
+                                )
+                                output.write(chunk)
+                                await self._speed_monitor.add(len(chunk))
+                                await self._token_bucket.consume(len(chunk), cfg.global_speed_limit * 1024)
+                    finally:
+                        await close_async_stream_response(response)
                 published_output = await asyncio.to_thread(
                     process_image,
                     temporary_download,
@@ -620,21 +713,21 @@ class DownloaderWorker(QThread):
             if task.downloaded_images < task.total_images:
                 images = await asyncio.to_thread(self._repository.get_images, task_id)
                 async with WnacgCrawler.get_client() as client:
+                    pending_images = [image for image in images if image["status"] != "downloaded"]
+
+                    async def download_one(image: ImageRecord) -> object:
+                        return await self._download_image(
+                            client=client,
+                            task=task,
+                            image=image,
+                            options=options,
+                            cancel_event=cancel_event,
+                            byte_budget=byte_budget,
+                            disk_guard=disk_guard,
+                        )
+
                     try:
-                        async with asyncio.TaskGroup() as task_group:
-                            for image in images:
-                                if image["status"] != "downloaded":
-                                    task_group.create_task(
-                                        self._download_image(
-                                            client=client,
-                                            task=task,
-                                            image=image,
-                                            options=options,
-                                            cancel_event=cancel_event,
-                                            byte_budget=byte_budget,
-                                            disk_guard=disk_guard,
-                                        )
-                                    )
+                        await run_bounded(pending_images, download_one, cfg.global_max_connections)
                     except* Exception as error_group:
                         for error in error_group.exceptions:
                             logger.error("Image task raised", task_id=task_id, error=str(error))
@@ -732,12 +825,8 @@ class DownloaderWorker(QThread):
 
         self._monitor_task = self._loop.create_task(self._monitor_loop())
 
-        # We don't automatically resume PENDING here. UI will trigger resume or we can auto resume.
-        # But for robustness, let's auto resume PENDING
-        tasks = self._repository.get_all_tasks()
-        for task in tasks:
-            if task.status == TaskStatus.PENDING:
-                self.resume_task(task.id)
+        # Pending tasks are already persisted as runnable; schedule only the available slots once.
+        self._check_queue()
 
         try:
             self._loop.run_forever()
@@ -785,3 +874,4 @@ class DownloaderWorker(QThread):
         remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
         if self.isRunning() and not self.wait(remaining_milliseconds):
             logger.error("Downloader thread did not stop within timeout")
+            self.wait()

@@ -48,18 +48,37 @@ def main() -> int:
         downloader_manager = DownloaderWorker(task_repository)
         downloader_manager.prepare()
 
-        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
         application_arguments = [argument for argument in sys.argv if argument != "--smoke-test"]
-        application = QApplication(application_arguments)
+        application_instance = QApplication.instance()
+        if application_instance is None:
+            QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+            application = QApplication(application_arguments)
+        elif isinstance(application_instance, QApplication):
+            application = application_instance
+        else:
+            raise RuntimeError("A non-GUI Qt application already exists")
         setTheme(Theme.AUTO)
 
         window = MainWindow(downloader_manager, task_repository, cover_manager)
+        services_stopped = False
 
         def stop_services() -> None:
-            shutdown_deadline = time.monotonic() + 20.0
-            downloader_manager.stop(shutdown_deadline)
-            cover_manager.stop(shutdown_deadline)
-            window.stop_workers(shutdown_deadline)
+            nonlocal services_stopped
+            if services_stopped:
+                return
+            services_stopped = True
+            services = (
+                ("downloader", lambda: downloader_manager.stop(time.monotonic() + 20.0)),
+                ("cover manager", lambda: cover_manager.stop(time.monotonic() + 20.0)),
+                ("UI workers", lambda: window.stop_workers(time.monotonic() + 20.0)),
+            )
+            for service_name, stop_service in services:
+                try:
+                    stop_service()
+                except Exception as error:
+                    from wnacg.infrastructure.logger import logger
+
+                    logger.error("Service shutdown failed", service=service_name, error=str(error))
 
         if smoke_test_requested:
             window.trayIcon.hide()

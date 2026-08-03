@@ -24,6 +24,9 @@ def test_task_and_image_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert loaded.options == task.options
     assert loaded.download_root == task.download_root
     assert [image["image_index"] for image in database.get_images(task.id)] == [0, 1]
+    assert database.count_tasks() == 1
+    assert database.count_tasks(frozenset({TaskStatus.PENDING})) == 1
+    assert [page_task.id for page_task in database.get_tasks_page(0, 10)] == [task.id]
 
     database.update_task_status(task.id, TaskStatus.DOWNLOADING)
     assert database.get_task(task.id).status is TaskStatus.DOWNLOADING  # type: ignore[union-attr]

@@ -14,6 +14,7 @@ from wnacg.application.download_limits import (
     SpeedMonitor,
     TaskByteBudget,
     TokenBucket,
+    run_bounded,
 )
 from wnacg.application.downloader import DownloaderWorker
 from wnacg.application.ports import TaskRepository
@@ -110,6 +111,27 @@ async def test_request_pacer_serializes_request_starts() -> None:
         task_group.create_task(record_start())
 
     assert starts[1] - starts[0] >= 0.01
+
+
+@pytest.mark.asyncio
+async def test_bounded_workers_do_not_create_one_live_task_per_item() -> None:
+    active = 0
+    peak = 0
+    processed = 0
+
+    async def process(_item: int) -> object:
+        nonlocal active, peak, processed
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)
+        processed += 1
+        active -= 1
+        return None
+
+    await run_bounded(list(range(1_000)), process, 8)
+
+    assert processed == 1_000
+    assert peak == 8
 
 
 @pytest.mark.asyncio

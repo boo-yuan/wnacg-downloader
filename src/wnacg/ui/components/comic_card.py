@@ -35,9 +35,7 @@ class _StateWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         task = self._repository.get_task_by_aid(self.comic.aid)
-        path = (
-            Path(task.save_path) if task else task_directory(Path(cfg.download_dir), self.comic.title, self.comic.aid)
-        )
+        path = Path(task.save_path) if task else task_directory(Path(cfg.download_dir), self.comic.title)
         on_disk = path.is_dir() or archive_path(path).is_file()
         if task and task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING, TaskStatus.PAUSED):
             state = "queued"
@@ -179,9 +177,7 @@ class ComicCard(ElevatedCardWidget):
 
     def _on_open_clicked(self) -> None:
         task = self._repository.get_task_by_aid(self.comic.aid)
-        path = (
-            Path(task.save_path) if task else task_directory(Path(cfg.download_dir), self.comic.title, self.comic.aid)
-        )
+        path = Path(task.save_path) if task else task_directory(Path(cfg.download_dir), self.comic.title)
 
         target_path = path
         if not path.exists() and archive_path(path).exists():

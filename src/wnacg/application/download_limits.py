@@ -3,10 +3,29 @@
 import asyncio
 import shutil
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+async def run_bounded[T](items: Sequence[T], worker: Callable[[T], Awaitable[object]], limit: int) -> None:
+    """Process a sequence with a fixed number of structured worker tasks."""
+    if not items:
+        return
+    iterator = iter(items)
+
+    async def consume() -> None:
+        while True:
+            try:
+                item = next(iterator)
+            except StopIteration:
+                return
+            await worker(item)
+
+    async with asyncio.TaskGroup() as task_group:
+        for _worker_index in range(min(len(items), max(1, limit))):
+            task_group.create_task(consume())
 
 
 @dataclass(slots=True)

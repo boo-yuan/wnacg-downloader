@@ -14,6 +14,7 @@ from PySide6.QtGui import QImage
 
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.http_streams import close_stream_response
 from wnacg.infrastructure.logger import logger
 from wnacg.infrastructure.network_safety import (
     ensure_expected_content_type,
@@ -110,19 +111,22 @@ class CoverFetchTask(QRunnable):
             try:
                 with WnacgCrawler.get_sync_client() as client:
                     resp = client.get(safe_url, timeout=5.0, stream=True)
-                    if cfg.proxy_mode is ProxyMode.DIRECT:
-                        ensure_public_peer_address(resp.primary_ip)
-                    resp.raise_for_status()
-                    ensure_public_https_url_sync(str(resp.url))
-                    ensure_expected_content_type(resp.headers, _IMAGE_CONTENT_TYPES)
-                    content_length = int(resp.headers.get("content-length", "0") or 0)
-                    if content_length > cfg.max_cover_bytes:
-                        raise ValueError(f"Cover image exceeds {cfg.max_cover_bytes} byte limit")
-                    chunks = cast(
-                        Iterable[bytes],
-                        resp.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
-                    )
-                    content = read_limited_chunks(chunks, cfg.max_cover_bytes)
+                    try:
+                        if cfg.proxy_mode is ProxyMode.DIRECT:
+                            ensure_public_peer_address(resp.primary_ip)
+                        resp.raise_for_status()
+                        ensure_public_https_url_sync(str(resp.url))
+                        ensure_expected_content_type(resp.headers, _IMAGE_CONTENT_TYPES)
+                        content_length = int(resp.headers.get("content-length", "0") or 0)
+                        if content_length > cfg.max_cover_bytes:
+                            raise ValueError(f"Cover image exceeds {cfg.max_cover_bytes} byte limit")
+                        chunks = cast(
+                            Iterable[bytes],
+                            resp.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                        )
+                        content = read_limited_chunks(chunks, cfg.max_cover_bytes)
+                    finally:
+                        close_stream_response(resp)
                 if self.stop_event.is_set():
                     return
                 img = QImage()
@@ -193,4 +197,5 @@ class CoverManagerClass(QObject):
         remaining_milliseconds = max(0, int((shutdown_deadline - time.monotonic()) * 1_000))
         if not self.cover_pool.waitForDone(remaining_milliseconds):
             logger.warning("Cover worker pool did not stop within timeout")
+            self.cover_pool.waitForDone()
         self._pending_callbacks.clear()
