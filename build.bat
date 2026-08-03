@@ -22,4 +22,4 @@ echo ==================================================
 echo Build Complete! 
 echo You can find WNACG-Downloader.exe in the 'dist' folder.
 echo ==================================================
-pause
+exit
