@@ -21,6 +21,20 @@ from wnacg.infrastructure.paths import DATA_DIR
 DATABASE_PATH = DATA_DIR / "tasks.db"
 _BUSY_TIMEOUT_MILLISECONDS = 30_000
 _SCHEMA_VERSION = 4
+_TASK_QUEUE_QUERY = """
+    SELECT *
+    FROM tasks
+    ORDER BY
+        CASE
+            WHEN status = 'downloading' THEN 0
+            WHEN status IN ('pending', 'paused', 'failed', 'missing') THEN 1
+            WHEN status = 'completed' THEN 2
+            ELSE 3
+        END,
+        created_at ASC,
+        rowid ASC
+    LIMIT ? OFFSET ?
+"""
 
 
 def _connect() -> sqlite3.Connection:
@@ -250,9 +264,9 @@ def save_task(task: DownloadTask) -> None:
 
 
 def get_all_tasks() -> list[DownloadTask]:
-    """Return all tasks, newest first."""
+    """Return tasks in the same priority and FIFO order used by the queue UI."""
     with closing(_connect()) as connection:
-        rows = connection.execute("SELECT * FROM tasks ORDER BY created_at DESC, id DESC").fetchall()
+        rows = connection.execute(_TASK_QUEUE_QUERY, (-1, 0)).fetchall()
     tasks: list[DownloadTask] = []
     for row in rows:
         try:
@@ -267,10 +281,7 @@ def get_tasks_page(offset: int, limit: int) -> list[DownloadTask]:
     if offset < 0 or limit < 1:
         raise ValueError("Task page offset and limit must be positive")
     with closing(_connect()) as connection:
-        rows = connection.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        rows = connection.execute(_TASK_QUEUE_QUERY, (limit, offset)).fetchall()
     tasks: list[DownloadTask] = []
     for row in rows:
         try:

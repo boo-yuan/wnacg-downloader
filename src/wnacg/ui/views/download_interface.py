@@ -485,6 +485,9 @@ class DownloadInterface(QWidget):
         card = self.task_cards.get(task_id)
         if card:
             card.set_status(new_status)
+        # Status changes can move a task between the active, waiting, and
+        # completed queue sections, including across pagination boundaries.
+        self._schedule_page_refresh()
 
     def _on_task_deletion_result(self, task_id: str, succeeded: bool, error: str) -> None:
         card = self.task_cards.get(task_id)

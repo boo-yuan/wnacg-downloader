@@ -45,6 +45,40 @@ def test_pending_task_can_only_be_claimed_once(monkeypatch: pytest.MonkeyPatch, 
     assert claimed.status is TaskStatus.DOWNLOADING
 
 
+def test_task_list_prioritizes_active_then_waiting_fifo_then_completed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "tasks.db")
+    database.initialize_database()
+    tasks = [
+        DownloadTask(id="waiting-old", comic=Comic(aid="100", title="Waiting old")),
+        DownloadTask(
+            id="completed",
+            comic=Comic(aid="101", title="Completed"),
+            status=TaskStatus.COMPLETED,
+        ),
+        DownloadTask(
+            id="downloading",
+            comic=Comic(aid="102", title="Downloading"),
+            status=TaskStatus.DOWNLOADING,
+        ),
+        DownloadTask(id="waiting-new", comic=Comic(aid="103", title="Waiting new")),
+    ]
+    for task in tasks:
+        database.save_task(task)
+
+    # Bulk additions can share SQLite's second-resolution timestamp. rowid is
+    # therefore the stable FIFO tiebreaker rather than the random task UUID.
+    with database.sqlite3.connect(database.DATABASE_PATH) as connection:
+        connection.execute("UPDATE tasks SET created_at = '2026-08-03 12:00:00'")
+
+    expected_order = ["downloading", "waiting-old", "waiting-new", "completed"]
+    assert [task.id for task in database.get_all_tasks()] == expected_order
+    assert [task.id for task in database.get_tasks_page(0, 2)] == expected_order[:2]
+    assert [task.id for task in database.get_tasks_page(2, 2)] == expected_order[2:]
+
+
 def test_future_database_schema_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     database_path = tmp_path / "tasks.db"
     monkeypatch.setattr(database, "DATABASE_PATH", database_path)

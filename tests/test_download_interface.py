@@ -55,6 +55,10 @@ def test_download_interface_keeps_only_one_page_of_cards_alive() -> None:
     assert len(interface.task_cards) == 50
     assert repository.page_calls[-1] == (200, 100)
 
+    interface._on_task_status_changed("task-0", TaskStatus.DOWNLOADING)
+    assert interface._page_refresh_timer.isActive()
+    interface._page_refresh_timer.stop()
+
     interface.close()
     interface.deleteLater()
     application.processEvents()
