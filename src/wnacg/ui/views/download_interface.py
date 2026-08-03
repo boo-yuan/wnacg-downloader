@@ -1,7 +1,10 @@
 """Download queue presentation and user commands."""
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QContextMenuEvent, QKeySequence, QShortcut
+from pathlib import Path
+from typing import cast
+
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QAction, QContextMenuEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
@@ -21,17 +24,17 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from wnacg.application.downloader import downloader_manager
+from wnacg.application.downloader import DownloaderWorker
 from wnacg.application.file_paths import archive_path
+from wnacg.application.ports import TaskRepository
 from wnacg.domain.models import DownloadTask, TaskStatus
 from wnacg.infrastructure.config import cfg
-from wnacg.infrastructure.database import task_repository as db
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.open_path import open_local_path
 
 
 class CancelPromptDialog(MessageBoxBase):
-    def __init__(self, count=1, parent=None):
+    def __init__(self, count: int = 1, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.titleLabel = SubtitleLabel("确认取消任务", self)
 
@@ -60,9 +63,10 @@ class CancelPromptDialog(MessageBoxBase):
 
 
 class DownloadItemCard(CardWidget):
-    def __init__(self, task: DownloadTask, parent=None):
+    def __init__(self, task: DownloadTask, downloader: DownloaderWorker, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.task = task
+        self._downloader = downloader
         self.setFixedHeight(84)
         self._is_selected = False
 
@@ -81,7 +85,7 @@ class DownloadItemCard(CardWidget):
         self.pauseBtn.clicked.connect(self._on_pause)
         self.resumeBtn.clicked.connect(self._on_resume)
         self.cancelBtn.clicked.connect(self._on_cancel)
-        self.openBtn.clicked.connect(self._on_open)
+        self.openBtn.clicked.connect(self.open_result)
 
         topLayout.addWidget(self.titleLabel, 1)
         topLayout.addWidget(self.pauseBtn, 0)
@@ -107,7 +111,7 @@ class DownloadItemCard(CardWidget):
         self._update_progress_ui()
         self._update_btns()
 
-    def _get_status_text(self):
+    def _get_status_text(self) -> str:
         err_msg = self.task.error_message or ""
         if len(err_msg) > 30:
             err_msg = err_msg[:30] + "..."
@@ -118,11 +122,12 @@ class DownloadItemCard(CardWidget):
             TaskStatus.PAUSED: "已暂停",
             TaskStatus.COMPLETED: "已完成",
             TaskStatus.FAILED: f"出错: {err_msg}",
+            TaskStatus.MISSING: "文件缺失，可重新下载",
             TaskStatus.CANCELED: "已取消",
         }
         return m.get(self.task.status, str(self.task.status))
 
-    def _update_progress_ui(self):
+    def _update_progress_ui(self) -> None:
         if self.task.total_images > 0:
             val = int(self.task.downloaded_images / self.task.total_images * 100)
             self.progressBar.setValue(val)
@@ -136,38 +141,37 @@ class DownloadItemCard(CardWidget):
         else:
             self.progressBar.resume()
 
-    def _update_btns(self):
+    def _update_btns(self) -> None:
         self.pauseBtn.setVisible(self.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
-        self.resumeBtn.setVisible(self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED))
+        self.resumeBtn.setVisible(self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING))
         self.cancelBtn.setVisible(self.task.status not in (TaskStatus.CANCELED, TaskStatus.COMPLETED))
         self.openBtn.setVisible(self.task.status == TaskStatus.COMPLETED)
 
-    def update_progress(self, downloaded: int, total: int):
-        self.task.downloaded_images = downloaded
-        self.task.total_images = total
+    def update_progress(self, downloaded: int, total: int) -> None:
+        self.task.set_progress(downloaded, total)
         self._update_progress_ui()
         self.statusLabel.setText(self._get_status_text())
 
-    def set_status(self, status: TaskStatus):
+    def set_status(self, status: TaskStatus) -> None:
         self.task.status = status
         self._update_progress_ui()
         self.statusLabel.setText(self._get_status_text())
         self._update_btns()
 
-    def set_error(self, err_msg):
+    def set_error(self, err_msg: str) -> None:
         self.task.status = TaskStatus.FAILED
         self.task.error_message = err_msg
         self._update_progress_ui()
         self.statusLabel.setText(self._get_status_text())
         self._update_btns()
 
-    def _on_pause(self):
-        downloader_manager.pause_task(self.task.id)
+    def _on_pause(self) -> None:
+        self._downloader.pause_task(self.task.id)
 
-    def _on_resume(self):
-        downloader_manager.resume_task(self.task.id)
+    def _on_resume(self) -> None:
+        self._downloader.resume_task(self.task.id)
 
-    def _on_cancel(self):
+    def _on_cancel(self) -> None:
         if cfg.show_cancel_prompt:
             w = CancelPromptDialog(1, self.window())
             if not w.exec():
@@ -177,35 +181,28 @@ class DownloadItemCard(CardWidget):
                 cfg.show_cancel_prompt = False
             cfg.save()
 
-        downloader_manager.cancel_task(self.task.id)
-        self.deleteLater()
+        self._downloader.cancel_task(self.task.id)
 
-    def _on_open(self):
-        from pathlib import Path
-
+    def open_result(self) -> None:
         path = Path(self.task.save_path)
 
         target_path = path
         if not path.exists() and archive_path(path).exists():
             target_path = archive_path(path)
 
-        if not target_path.exists():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path = target_path.parent
-
         open_local_path(target_path)
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             if self.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
                 self._on_pause()
-            elif self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
+            elif self.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING):
                 self._on_resume()
             elif self.task.status == TaskStatus.COMPLETED:
-                self._on_open()
+                self.open_result()
         super().mouseDoubleClickEvent(event)
 
-    def setSelected(self, selected: bool):
+    def setSelected(self, selected: bool) -> None:
         if self._is_selected == selected:
             return
         self._is_selected = selected
@@ -217,15 +214,22 @@ class DownloadItemCard(CardWidget):
         else:
             self.setStyleSheet("")
 
-    def contextMenuEvent(self, event: QContextMenuEvent):
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         parent = self.parent()
         if isinstance(parent, SelectableContainer):
             parent.customContextMenuRequested.emit(self.mapToParent(event.pos()))
 
 
 class DownloadInterface(QWidget):
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        downloader: DownloaderWorker,
+        repository: TaskRepository,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent=parent)
+        self._downloader = downloader
+        self._repository = repository
         self.setObjectName("DownloadInterface")
 
         self.vbox = QVBoxLayout(self)
@@ -293,10 +297,11 @@ class DownloadInterface(QWidget):
 
         self._load_existing_tasks()
 
-        downloader_manager.signals.task_added.connect(self._on_task_added)
-        downloader_manager.signals.task_progress.connect(self._on_task_progress)
-        downloader_manager.signals.task_status_changed.connect(self._on_task_status_changed)
-        downloader_manager.signals.task_error.connect(self._on_task_error)
+        downloader.signals.task_added.connect(self._on_task_added)
+        downloader.signals.task_progress.connect(self._on_task_progress)
+        downloader.signals.task_status_changed.connect(self._on_task_status_changed)
+        downloader.signals.task_error.connect(self._on_task_error)
+        downloader.signals.task_deletion_result.connect(self._on_task_deletion_result)
 
         self._update_empty_state()
 
@@ -314,7 +319,7 @@ class DownloadInterface(QWidget):
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
-    def _show_hint(self):
+    def _show_hint(self) -> None:
         InfoBar.info(
             title="💡 操作提示",
             content=(
@@ -328,39 +333,41 @@ class DownloadInterface(QWidget):
             parent=self,
         )
 
-    def _on_scroll(self, value):
+    def _on_scroll(self, value: int) -> None:
         if value > 300:
             self.backToTopBtn.show()
         else:
             self.backToTopBtn.hide()
 
-    def resizeEvent(self, e):
+    def resizeEvent(self, e: QResizeEvent) -> None:
         super().resizeEvent(e)
         self.backToTopBtn.move(self.width() - 80, self.height() - 100)
 
-    def _start_selected(self):
-        selected = self.scrollWidget.get_selected_items()
+    def _start_selected(self) -> None:
+        selected = [cast(DownloadItemCard, item) for item in self.scrollWidget.get_selected_items()]
         if not selected:
             return
         task_ids = [
-            c.task.id for c in selected if c.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)
+            c.task.id
+            for c in selected
+            if c.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.PENDING)
         ]
         if task_ids:
-            downloader_manager.resume_tasks(task_ids)
+            self._downloader.resume_tasks(task_ids)
 
-    def _init_empty_state(self):
+    def _init_empty_state(self) -> None:
         self.emptyWidget = QWidget(self)
         emptyLayout = QVBoxLayout(self.emptyWidget)
         emptyLayout.setSpacing(12)
 
-        import os
+        from pathlib import Path
 
         from PySide6.QtGui import QPixmap
         from qfluentwidgets import SubtitleLabel
 
         self.emptyImage = QLabel(self)
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
-        pixmap = QPixmap(icon_path)
+        icon_path = Path(__file__).resolve().parents[2] / "resource" / "icon.png"
+        pixmap = QPixmap(str(icon_path))
         if not pixmap.isNull():
             pixmap = pixmap.scaled(
                 100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
@@ -384,49 +391,60 @@ class DownloadInterface(QWidget):
 
         self.vbox.addWidget(self.emptyWidget, 1)
 
-    def _update_empty_state(self):
+    def _update_empty_state(self) -> None:
         has_tasks = len(self.task_cards)
         self.commandBar.setVisible(bool(has_tasks))
         self.scrollArea.setVisible(bool(has_tasks))
         self.emptyWidget.setVisible(not has_tasks)
 
-    def _load_existing_tasks(self):
-        tasks = db.get_all_tasks()
+    def _load_existing_tasks(self) -> None:
+        tasks = self._repository.get_all_tasks()
         for task in tasks:
             self._on_task_added(task)
 
-    def _on_task_added(self, task: DownloadTask):
+    def _on_task_added(self, task: DownloadTask) -> None:
         if task.id in self.task_cards:
             return
-        card = DownloadItemCard(task, self.scrollWidget)
+        card = DownloadItemCard(task, self._downloader, self.scrollWidget)
         self.listLayout.addWidget(card)
         self.task_cards[task.id] = card
         self._update_empty_state()
 
-    def _on_task_progress(self, task_id, downloaded, total):
+    def _on_task_progress(self, task_id: str, downloaded: int, total: int) -> None:
         card = self.task_cards.get(task_id)
         if card:
             card.update_progress(downloaded, total)
 
-    def _on_task_status_changed(self, task_id, new_status: TaskStatus):
+    def _on_task_status_changed(self, task_id: str, new_status: TaskStatus) -> None:
         card = self.task_cards.get(task_id)
         if card:
-            if new_status == TaskStatus.CANCELED:
-                del self.task_cards[task_id]
+            card.set_status(new_status)
+
+    def _on_task_deletion_result(self, task_id: str, succeeded: bool, error: str) -> None:
+        card = self.task_cards.get(task_id)
+        if succeeded:
+            if card is not None:
+                self.task_cards.pop(task_id, None)
                 self.listLayout.removeWidget(card)
                 card.deleteLater()
                 self._update_empty_state()
-            else:
-                card.set_status(new_status)
+            return
+        InfoBar.error(
+            "删除失败",
+            f"任务 {task_id} 未删除：{error}",
+            parent=self.window(),
+            position=InfoBarPosition.TOP_RIGHT,
+        )
 
-    def _on_task_error(self, task_id, err_msg):
+    def _on_task_error(self, task_id: str, err_msg: str) -> None:
         card = self.task_cards.get(task_id)
         if card:
             card.set_error(err_msg)
 
-    def _show_context_menu(self, pos):
-        selected_items = self.scrollWidget.get_selected_items()
-        target_card = self.scrollWidget._get_item_at(pos)
+    def _show_context_menu(self, pos: QPoint) -> None:
+        selected_items = [cast(DownloadItemCard, item) for item in self.scrollWidget.get_selected_items()]
+        target_item = self.scrollWidget.get_item_at(pos)
+        target_card = cast(DownloadItemCard | None, target_item)
 
         if not selected_items:
             if target_card:
@@ -448,7 +466,7 @@ class DownloadInterface(QWidget):
 
         if len(selected_items) == 1:
             action_open = QAction("打开所在文件夹", self)
-            action_open.triggered.connect(lambda: selected_items[0]._on_open())
+            action_open.triggered.connect(selected_items[0].open_result)
             menu.addAction(action_open)
             menu.addSeparator()
 
@@ -472,27 +490,27 @@ class DownloadInterface(QWidget):
         global_pos = self.scrollWidget.mapToGlobal(pos)
         menu.exec(global_pos)
 
-    def _bulk_resume(self, items):
+    def _bulk_resume(self, items: list[DownloadItemCard]) -> None:
         task_ids = [
             item.task.id
             for item in items
             if hasattr(item, "task") and item.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)
         ]
         if task_ids:
-            downloader_manager.resume_tasks(task_ids)
+            self._downloader.resume_tasks(task_ids)
         self.scrollWidget.clear_selection()
 
-    def _bulk_pause(self, items):
+    def _bulk_pause(self, items: list[DownloadItemCard]) -> None:
         task_ids = [
             item.task.id
             for item in items
             if hasattr(item, "task") and item.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)
         ]
         if task_ids:
-            downloader_manager.pause_tasks(task_ids)
+            self._downloader.pause_tasks(task_ids)
         self.scrollWidget.clear_selection()
 
-    def _bulk_cancel(self, items):
+    def _bulk_cancel(self, items: list[DownloadItemCard]) -> None:
         valid_items = [item for item in items if hasattr(item, "task") and item.task.status != TaskStatus.CANCELED]
         if not valid_items:
             return
@@ -506,24 +524,20 @@ class DownloadInterface(QWidget):
                 cfg.show_cancel_prompt = False
             cfg.save()
 
-        task_ids = []
-        for item in valid_items:
-            task_ids.append(item.task.id)
-            self.listLayout.removeWidget(item)
-            item.deleteLater()
+        task_ids = [item.task.id for item in valid_items]
 
         if task_ids:
-            downloader_manager.cancel_tasks(task_ids)
+            self._downloader.cancel_tasks(task_ids)
         self.scrollWidget.clear_selection()
 
-    def _start_all(self):
+    def _start_all(self) -> None:
         task_ids = [
             card.task.id
             for card in self.task_cards.values()
-            if card.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.PENDING)
+            if card.task.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.PENDING)
         ]
         if task_ids:
-            downloader_manager.resume_tasks(task_ids)
+            self._downloader.resume_tasks(task_ids)
             InfoBar.success(
                 "🚀 批量启动",
                 "已唤醒所有待命的任务，火力全开！",
@@ -531,40 +545,32 @@ class DownloadInterface(QWidget):
                 position=InfoBarPosition.TOP_RIGHT,
             )
 
-    def _pause_all(self):
+    def _pause_all(self) -> None:
         task_ids = [
             card.task.id
             for card in self.task_cards.values()
             if card.task.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING)
         ]
         if task_ids:
-            downloader_manager.pause_tasks(task_ids)
+            self._downloader.pause_tasks(task_ids)
             InfoBar.warning(
                 "⏸️ 紧急刹车", "正在下载的任务已全部暂停", parent=self.window(), position=InfoBarPosition.TOP_RIGHT
             )
 
-    def _clear_completed(self):
-        to_remove = []
-        for task_id, card in list(self.task_cards.items()):
-            if card.task.status == TaskStatus.COMPLETED:
-                to_remove.append(task_id)
-                self.listLayout.removeWidget(card)
-                card.deleteLater()
+    def _clear_completed(self) -> None:
+        to_remove = [task_id for task_id, card in self.task_cards.items() if card.task.status == TaskStatus.COMPLETED]
         if to_remove:
-            downloader_manager.delete_tasks(to_remove, delete_files=False)
-        for tid in to_remove:
-            self.task_cards.pop(tid, None)
+            self._downloader.delete_tasks(to_remove, delete_files=False)
         if to_remove:
-            self._update_empty_state()
             InfoBar.success(
-                "🧹 列表清理完成",
-                "已抹除全部完成记录，保持界面清爽（您的文件完好无损）",
+                "🧹 正在清理",
+                "完成记录将在持久化删除成功后从列表移除（文件不会删除）",
                 parent=self.window(),
                 position=InfoBarPosition.TOP_RIGHT,
             )
 
-    def _cancel_all(self):
-        valid_items = [card for task_id, card in self.task_cards.items() if card.task.status != TaskStatus.CANCELED]
+    def _cancel_all(self) -> None:
+        valid_items = [card for card in self.task_cards.values() if card.task.status != TaskStatus.CANCELED]
         if not valid_items:
             return
 
@@ -577,13 +583,7 @@ class DownloadInterface(QWidget):
                 cfg.show_cancel_prompt = False
             cfg.save()
 
-        to_remove = []
-        for card in valid_items:
-            to_remove.append(card.task.id)
-            self.listLayout.removeWidget(card)
-            card.deleteLater()
+        to_remove = [card.task.id for card in valid_items]
 
         if to_remove:
-            downloader_manager.cancel_tasks(to_remove)
-        self.task_cards.clear()
-        self._update_empty_state()
+            self._downloader.cancel_tasks(to_remove)

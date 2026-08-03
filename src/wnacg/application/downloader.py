@@ -2,116 +2,39 @@
 
 import asyncio
 import contextlib
-import os
 import random
 import shutil
 import threading
-import time
 import uuid
-import zipfile
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncIterator
 from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import TypedDict, cast
 
-import PIL.Image
 from curl_cffi.requests import AsyncSession, Response
 from PySide6.QtCore import QObject, QThread, Signal
 
-from wnacg.application.file_paths import (
-    archive_path,
-    image_base_name,
-    task_directory,
-    validated_task_directory,
-)
+from wnacg.application.artifacts import reconcile_artifacts
+from wnacg.application.download_limits import AdjustableLimiter, SpeedMonitor, TaskByteBudget, TokenBucket
+from wnacg.application.file_paths import archive_path, task_directory, validated_task_directory
+from wnacg.application.image_files import current_output_files, expected_image_paths, is_valid_image, process_image
 from wnacg.application.ports import ImageRecord, TaskRepository
 from wnacg.domain.models import Comic, DownloadOptions, DownloadTask, TaskStatus
 from wnacg.infrastructure.config import cfg
 from wnacg.infrastructure.crawler import WnacgCrawler
-from wnacg.infrastructure.database import task_repository
 from wnacg.infrastructure.logger import logger
+from wnacg.infrastructure.network_safety import ensure_expected_content_type, ensure_public_https_url
 
-
-class SpeedMonitor:
-    def __init__(self):
-        self._bytes = 0
-        self._last_time = time.monotonic()
-        self._lock = asyncio.Lock()
-
-    async def add(self, bytes_count: int):
-        async with self._lock:
-            self._bytes += bytes_count
-
-    async def get_and_reset(self) -> float:
-        async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._last_time
-            if elapsed == 0:
-                elapsed = 1e-6
-            speed = self._bytes / elapsed
-            self._bytes = 0
-            self._last_time = now
-            return speed
-
-
-class TokenBucket:
-    def __init__(self):
-        self._last_update = time.monotonic()
-        self._tokens = 0.0
-        self._lock = asyncio.Lock()
-
-    async def consume(self, amount: int, rate_limit: int):
-        if rate_limit <= 0:
-            return
-
-        async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._last_update
-            self._last_update = now
-
-            # Generate tokens for the elapsed time
-            self._tokens += elapsed * rate_limit
-
-            # Cap tokens at 2x rate_limit to prevent bursting after long idle
-            if self._tokens > rate_limit * 2:
-                self._tokens = rate_limit * 2
-
-            # Consume the required amount (can drive tokens negative)
-            self._tokens -= amount
-
-            sleep_time = 0 if self._tokens >= 0 else -self._tokens / rate_limit
-
-        if sleep_time > 0:
-            await asyncio.sleep(sleep_time)
-
-
-class AdjustableLimiter:
-    """Event-loop-local limiter with runtime-adjustable capacity."""
-
-    def __init__(self, limit: int) -> None:
-        self._limit = max(1, limit)
-        self._active = 0
-        self._condition = asyncio.Condition()
-
-    @asynccontextmanager
-    async def slot(self) -> AsyncGenerator[None]:
-        """Wait for and hold one connection slot."""
-        async with self._condition:
-            await self._condition.wait_for(lambda: self._active < self._limit)
-            self._active += 1
-        try:
-            yield
-        finally:
-            async with self._condition:
-                self._active -= 1
-                self._condition.notify_all()
-
-    async def set_limit(self, limit: int) -> None:
-        """Apply a positive limit and wake queued operations."""
-        async with self._condition:
-            self._limit = max(1, limit)
-            self._condition.notify_all()
+_IMAGE_CONTENT_TYPES = {
+    "image/avif",
+    "image/bmp",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+    "image/webp",
+}
 
 
 class PendingDeletion(TypedDict):
@@ -121,21 +44,6 @@ class PendingDeletion(TypedDict):
     delete_files: bool
 
 
-def is_valid_image(file_path: Path) -> bool:
-    if not file_path.exists() or file_path.stat().st_size == 0:
-        return False
-    try:
-        with PIL.Image.open(file_path) as img:
-            img.verify()
-        # verify() only checks header. We must load() to catch truncated (half-downloaded) images.
-        # PIL.ImageFile.LOAD_TRUNCATED_IMAGES is False by default, so load() will raise OSError if truncated.
-        with PIL.Image.open(file_path) as img:
-            img.load()
-        return True
-    except Exception:
-        return False
-
-
 class DownloaderSignals(QObject):
     task_added = Signal(DownloadTask)
     task_progress = Signal(str, int, int)  # task_id, downloaded, total
@@ -143,10 +51,11 @@ class DownloaderSignals(QObject):
     task_error = Signal(str, str)  # task_id, error_message
     badge_update = Signal(int)  # active tasks count
     speed_update = Signal(str)  # speed formatted string
+    task_deletion_result = Signal(str, bool, str)  # task_id, succeeded, error
 
 
 class DownloaderWorker(QThread):
-    def __init__(self, repository: TaskRepository = task_repository) -> None:
+    def __init__(self, repository: TaskRepository) -> None:
         super().__init__()
         self._repository = repository
         self.signals = DownloaderSignals()
@@ -159,7 +68,9 @@ class DownloaderWorker(QThread):
         self._speed_monitor = SpeedMonitor()
         self._token_bucket = TokenBucket()
         self._monitor_task: asyncio.Task[None] | None = None
+        self._progress_locks: dict[str, asyncio.Lock] = {}
         self._prepared = False
+        self._stopping = False
 
     def prepare(self) -> None:
         """Reconcile persisted state explicitly during application startup."""
@@ -174,7 +85,11 @@ class DownloaderWorker(QThread):
             if task.status == TaskStatus.COMPLETED:
                 save_path = Path(task.save_path)
                 if not save_path.exists() and not archive_path(save_path).exists():
-                    self._repository.delete_task(task.id)
+                    self._repository.update_task_status(
+                        task.id,
+                        TaskStatus.MISSING,
+                        "Completed download artifacts are missing",
+                    )
         self._prepared = True
 
     @staticmethod
@@ -193,14 +108,13 @@ class DownloaderWorker(QThread):
         if existing:
             if existing.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING):
                 return existing
-            elif existing.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
+            elif existing.status in (TaskStatus.PAUSED, TaskStatus.FAILED, TaskStatus.MISSING):
                 if cfg.auto_start_download and self._loop:
                     self.resume_task(existing.id)
                 return existing
             elif existing.status == TaskStatus.COMPLETED:
                 existing.status = TaskStatus.PENDING if cfg.auto_start_download else TaskStatus.PAUSED
-                existing.downloaded_images = 0
-                existing.progress = 0
+                existing.set_progress(0, existing.total_images)
                 existing.error_message = ""
                 existing.options = self._options_from_config()
                 self._repository.save_task(existing)
@@ -232,7 +146,7 @@ class DownloaderWorker(QThread):
 
         return task
 
-    def pause_tasks(self, task_ids: list[str]):
+    def pause_tasks(self, task_ids: list[str]) -> None:
         loop = self._loop
         with self._lock:
             for task_id in task_ids:
@@ -243,10 +157,10 @@ class DownloaderWorker(QThread):
         self._update_badge()
         self._check_queue()
 
-    def pause_task(self, task_id: str):
+    def pause_task(self, task_id: str) -> None:
         self.pause_tasks([task_id])
 
-    def resume_tasks(self, task_ids: list[str]):
+    def resume_tasks(self, task_ids: list[str]) -> None:
         with self._lock:
             for task_id in task_ids:
                 if self._loop:
@@ -255,11 +169,11 @@ class DownloaderWorker(QThread):
         self._update_badge()
         self._check_queue()
 
-    def resume_task(self, task_id: str):
+    def resume_task(self, task_id: str) -> None:
         self.resume_tasks([task_id])
 
-    def _check_queue(self):
-        if not self._loop:
+    def _check_queue(self) -> None:
+        if not self._loop or self._stopping:
             return
 
         with self._lock:
@@ -287,25 +201,31 @@ class DownloaderWorker(QThread):
 
         self._update_badge()
 
-    def delete_tasks(self, task_ids: list[str], delete_files: bool = False):
+    def delete_tasks(self, task_ids: list[str], delete_files: bool = False) -> None:
         with self._lock:
             for task_id in task_ids:
-                task = self._repository.get_task(task_id)
-                if task is None:
-                    continue
-                should_delete_files = delete_files and cfg.delete_files_on_cancel
-                if task_id in self._cancel_events:
-                    self._pending_deletions[task_id] = PendingDeletion(
-                        task=task,
-                        delete_files=should_delete_files,
-                    )
-                    if self._loop is not None:
-                        self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
-                    self._repository.update_task_status(task_id, TaskStatus.CANCELED)
-                else:
-                    self._delete_task_artifacts(task, should_delete_files)
-                    self._repository.delete_task(task_id)
-                self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
+                try:
+                    task = self._repository.get_task(task_id)
+                    if task is None:
+                        self.signals.task_deletion_result.emit(task_id, True, "")
+                        continue
+                    should_delete_files = delete_files and cfg.delete_files_on_cancel
+                    if task_id in self._cancel_events:
+                        self._pending_deletions[task_id] = PendingDeletion(
+                            task=task,
+                            delete_files=should_delete_files,
+                        )
+                        if self._loop is not None:
+                            self._loop.call_soon_threadsafe(self._cancel_events[task_id].set)
+                        self._repository.update_task_status(task_id, TaskStatus.CANCELED)
+                        self.signals.task_status_changed.emit(task_id, TaskStatus.CANCELED)
+                    else:
+                        self._delete_task_artifacts(task, should_delete_files)
+                        self._repository.delete_task(task_id)
+                        self.signals.task_deletion_result.emit(task_id, True, "")
+                except Exception as error:
+                    logger.error("Task deletion failed", task_id=task_id, error=str(error))
+                    self.signals.task_deletion_result.emit(task_id, False, str(error))
         self._update_badge()
         self._check_queue()
 
@@ -324,13 +244,13 @@ class DownloaderWorker(QThread):
             zip_path.unlink()
             logger.info("Deleted task archive", path=str(zip_path), task_id=task.id)
 
-    def cancel_tasks(self, task_ids: list[str]):
+    def cancel_tasks(self, task_ids: list[str]) -> None:
         self.delete_tasks(task_ids, delete_files=True)
 
-    def cancel_task(self, task_id: str):
+    def cancel_task(self, task_id: str) -> None:
         self.cancel_tasks([task_id])
 
-    def _update_badge(self):
+    def _update_badge(self) -> None:
         tasks = self._repository.get_all_tasks()
         active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
         self.signals.badge_update.emit(active_count)
@@ -344,87 +264,6 @@ class DownloaderWorker(QThread):
                 self._loop,
             )
 
-    @staticmethod
-    def _expected_image_paths(
-        task: DownloadTask,
-        image: ImageRecord,
-        options: DownloadOptions,
-    ) -> list[Path]:
-        base_name = image_base_name(
-            image["image_index"],
-            image["raw_url"],
-            options.naming.value,
-            options.naming_version,
-        )
-        if options.image_format.value == "original":
-            extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif")
-        else:
-            extensions = (f".{options.image_format.value}",)
-        return [Path(task.save_path) / f"{base_name}{extension}" for extension in extensions]
-
-    @staticmethod
-    def _process_image(
-        source_path: Path,
-        save_directory: Path,
-        index: int,
-        raw_url: str,
-        options: DownloadOptions,
-    ) -> Path:
-        with PIL.Image.open(source_path) as image:
-            image.load()
-            detected_format = (image.format or "JPEG").lower()
-            target_format = options.image_format.value
-            if target_format == "original":
-                target_format = "jpg" if detected_format == "jpeg" else detected_format
-            base_name = image_base_name(index, raw_url, options.naming.value, options.naming_version)
-            final_path = save_directory / f"{base_name}.{target_format}"
-            temporary_path = final_path.with_name(f".{final_path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                if options.image_format.value == "original":
-                    shutil.copyfile(source_path, temporary_path)
-                else:
-                    output_image = image
-                    if target_format == "jpg" and output_image.mode in ("RGBA", "P"):
-                        background = PIL.Image.new("RGB", output_image.size, (255, 255, 255))
-                        alpha = output_image.convert("RGBA").getchannel("A")
-                        background.paste(output_image, mask=alpha)
-                        output_image = background
-                    elif target_format == "jpg" and output_image.mode != "RGB":
-                        output_image = output_image.convert("RGB")
-                    save_options = {"quality": 95} if target_format == "jpg" else {}
-                    pillow_format = "JPEG" if target_format == "jpg" else target_format.upper()
-                    output_image.save(temporary_path, format=pillow_format, **save_options)
-                if not is_valid_image(temporary_path):
-                    raise ValueError("Processed image failed integrity validation")
-                temporary_path.replace(final_path)
-                return final_path
-            finally:
-                temporary_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _create_archive(source_directory: Path, delete_original: bool) -> None:
-        if not source_directory.exists():
-            if archive_path(source_directory).exists():
-                return
-            raise FileNotFoundError(source_directory)
-        final_archive = archive_path(source_directory)
-        temporary_archive = final_archive.with_name(f".{final_archive.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with zipfile.ZipFile(temporary_archive, "w", zipfile.ZIP_DEFLATED) as archive:
-                for root, _directories, files in os.walk(source_directory):
-                    for file_name in files:
-                        file_path = Path(root) / file_name
-                        archive.write(file_path, file_path.relative_to(source_directory))
-            with zipfile.ZipFile(temporary_archive) as archive:
-                corrupt_member = archive.testzip()
-                if corrupt_member is not None:
-                    raise ValueError(f"Corrupt ZIP member: {corrupt_member}")
-            temporary_archive.replace(final_archive)
-            if delete_original:
-                shutil.rmtree(source_directory)
-        finally:
-            temporary_archive.unlink(missing_ok=True)
-
     async def _download_image(
         self,
         *,
@@ -433,6 +272,7 @@ class DownloaderWorker(QThread):
         image: ImageRecord,
         options: DownloadOptions,
         cancel_event: asyncio.Event,
+        byte_budget: TaskByteBudget,
     ) -> bool:
         if self._connection_limiter is None:
             raise RuntimeError("Connection limiter is not initialized")
@@ -456,24 +296,26 @@ class DownloaderWorker(QThread):
                 logger.error("Failed to resolve raw image URL", task_id=task.id, image_index=index)
                 return False
 
+        raw_url = await ensure_public_https_url(raw_url)
+
         resolved_image = ImageRecord(**image)
         resolved_image["raw_url"] = raw_url
-        expected_paths = self._expected_image_paths(task, resolved_image, options)
+        expected_paths = expected_image_paths(task, resolved_image, options)
         existing_image = False
         for path in expected_paths:
-            if await asyncio.to_thread(is_valid_image, path):
+            if await asyncio.to_thread(is_valid_image, path, cfg.max_image_pixels):
                 existing_image = True
                 break
         if existing_image:
             if image["status"] != "downloaded":
                 await asyncio.to_thread(self._repository.update_image_status, task.id, index, "downloaded")
-                task.downloaded_images += 1
-                await self._persist_progress(task)
+                await self._increment_progress(task)
             return True
 
         maximum_bytes = cfg.max_image_bytes
         temporary_download = Path(task.save_path) / f".{index:04d}.{uuid.uuid4().hex}.download"
         for attempt in range(5):
+            reserved_bytes = 0
             if cancel_event.is_set():
                 return False
             try:
@@ -483,6 +325,8 @@ class DownloaderWorker(QThread):
                         await asyncio.sleep(options.delay_seconds * jitter)
                     response = await client.get(raw_url, timeout=30.0, stream=True)
                     response.raise_for_status()
+                    await ensure_public_https_url(str(response.url))
+                    ensure_expected_content_type(response.headers, _IMAGE_CONTENT_TYPES)
                     content_length = int(response.headers.get("content-length", "0") or 0)
                     if content_length > maximum_bytes:
                         raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
@@ -494,26 +338,34 @@ class DownloaderWorker(QThread):
                         )
                         async for chunk in chunks:
                             if cancel_event.is_set():
+                                await byte_budget.release(reserved_bytes)
                                 return False
                             downloaded_bytes += len(chunk)
                             if downloaded_bytes > maximum_bytes:
                                 raise ValueError(f"Image exceeds {maximum_bytes} byte limit")
+                            await byte_budget.reserve(len(chunk))
+                            reserved_bytes += len(chunk)
+                            if downloaded_bytes % (8 * 1024 * 1024) < len(chunk):
+                                free_bytes = shutil.disk_usage(task.save_path).free
+                                if free_bytes < cfg.minimum_free_space_bytes:
+                                    raise OSError("Insufficient free disk space for download")
                             output.write(chunk)
                             await self._speed_monitor.add(len(chunk))
                             await self._token_bucket.consume(len(chunk), cfg.global_speed_limit * 1024)
                 await asyncio.to_thread(
-                    self._process_image,
+                    process_image,
                     temporary_download,
                     Path(task.save_path),
                     index,
                     raw_url,
                     options,
+                    cfg.max_image_pixels,
                 )
                 await asyncio.to_thread(self._repository.update_image_status, task.id, index, "downloaded")
-                task.downloaded_images += 1
-                await self._persist_progress(task)
+                await self._increment_progress(task)
                 return True
             except Exception as error:
+                await byte_budget.release(reserved_bytes)
                 if attempt == 4:
                     logger.error(
                         "Image download failed",
@@ -528,15 +380,33 @@ class DownloaderWorker(QThread):
         return False
 
     async def _persist_progress(self, task: DownloadTask) -> None:
-        progress = task.downloaded_images / max(1, task.total_images)
-        await asyncio.to_thread(
-            self._repository.update_task_progress,
-            task.id,
-            progress,
-            task.downloaded_images,
-            task.total_images,
-        )
-        self.signals.task_progress.emit(task.id, task.downloaded_images, task.total_images)
+        progress_lock = self._progress_locks.setdefault(task.id, asyncio.Lock())
+        async with progress_lock:
+            downloaded_images = task.downloaded_images
+            total_images = task.total_images
+            progress = downloaded_images / max(1, total_images)
+            await asyncio.to_thread(
+                self._repository.update_task_progress,
+                task.id,
+                progress,
+                downloaded_images,
+                total_images,
+            )
+            self.signals.task_progress.emit(task.id, downloaded_images, total_images)
+
+    async def _increment_progress(self, task: DownloadTask) -> None:
+        """Increment and persist progress while holding the per-task aggregate lock."""
+        progress_lock = self._progress_locks.setdefault(task.id, asyncio.Lock())
+        async with progress_lock:
+            task.set_progress(task.downloaded_images + 1, task.total_images)
+            await asyncio.to_thread(
+                self._repository.update_task_progress,
+                task.id,
+                task.progress,
+                task.downloaded_images,
+                task.total_images,
+            )
+            self.signals.task_progress.emit(task.id, task.downloaded_images, task.total_images)
 
     async def _process_task(self, task_id: str) -> None:
         cancel_event = asyncio.Event()
@@ -544,6 +414,11 @@ class DownloaderWorker(QThread):
             task = await asyncio.to_thread(self._repository.get_task, task_id)
             if task is None:
                 return
+            if not await asyncio.to_thread(self._repository.claim_pending_task, task_id):
+                return
+            connection_limiter = self._connection_limiter
+            if connection_limiter is None:
+                raise RuntimeError("Connection limiter is not initialized")
             if task.options is None:
                 task.options = self._options_from_config(naming_version=1)
                 task.download_root = task.download_root or str(Path(task.save_path).parent)
@@ -555,14 +430,21 @@ class DownloaderWorker(QThread):
                     return
                 self._cancel_events[task_id] = cancel_event
 
-            await asyncio.to_thread(self._repository.update_task_status, task_id, TaskStatus.DOWNLOADING)
             self.signals.task_status_changed.emit(task_id, TaskStatus.DOWNLOADING)
             Path(task.save_path).mkdir(parents=True, exist_ok=True)
 
             images = await asyncio.to_thread(self._repository.get_images, task_id)
             if not images:
                 expected_count = WnacgCrawler.expected_count(task.comic.pic_count)
-                raw_urls = await WnacgCrawler.get_all_raw_urls(task.comic.aid)
+                try:
+                    raw_urls = await WnacgCrawler.get_all_raw_urls(task.comic.aid, connection_limiter.slot)
+                except Exception as error:
+                    raw_urls = []
+                    logger.warning(
+                        "Direct gallery endpoint failed; falling back to paginated crawl",
+                        task_id=task_id,
+                        error=str(error),
+                    )
                 raw_links_verified = bool(raw_urls and expected_count is not None and len(raw_urls) == expected_count)
                 if raw_links_verified:
                     await asyncio.to_thread(self._repository.save_raw_links, task_id, raw_urls)
@@ -574,7 +456,10 @@ class DownloaderWorker(QThread):
                             expected=expected_count,
                             actual=len(raw_urls),
                         )
-                    view_links = await WnacgCrawler.get_image_view_links(task.comic.aid)
+                    view_links = await WnacgCrawler.get_image_view_links(
+                        task.comic.aid,
+                        connection_limiter.slot,
+                    )
                     if expected_count is not None and len(view_links) != expected_count:
                         raise RuntimeError(
                             f"Incomplete gallery crawl: expected {expected_count} images, found {len(view_links)}"
@@ -585,16 +470,20 @@ class DownloaderWorker(QThread):
                         await asyncio.to_thread(self._repository.save_view_links, task_id, view_links)
                 images = await asyncio.to_thread(self._repository.get_images, task_id)
 
-            task.total_images = len(images)
-            if task.total_images == 0:
+            total_images = len(images)
+            if total_images == 0:
                 raise RuntimeError("No images found in gallery")
+            if total_images > cfg.max_gallery_images:
+                raise RuntimeError(f"Gallery exceeds configured image limit: {total_images}")
 
             downloaded_count = 0
+            existing_bytes = 0
             for image in images:
                 valid = False
-                for path in self._expected_image_paths(task, image, options):
-                    if await asyncio.to_thread(is_valid_image, path):
+                for path in expected_image_paths(task, image, options):
+                    if await asyncio.to_thread(is_valid_image, path, cfg.max_image_pixels):
                         valid = True
+                        existing_bytes += path.stat().st_size
                         break
                 target_status = "downloaded" if valid else "pending"
                 if image["status"] != target_status:
@@ -605,8 +494,13 @@ class DownloaderWorker(QThread):
                         target_status,
                     )
                 downloaded_count += int(valid)
-            task.downloaded_images = downloaded_count
+            task.set_progress(downloaded_count, total_images)
             await self._persist_progress(task)
+            if existing_bytes > cfg.max_task_bytes:
+                raise RuntimeError("Existing gallery files exceed configured task byte limit")
+            if shutil.disk_usage(task.save_path).free < cfg.minimum_free_space_bytes:
+                raise OSError("Insufficient free disk space for download")
+            byte_budget = TaskByteBudget(cfg.max_task_bytes, existing_bytes)
 
             if task.downloaded_images < task.total_images:
                 images = await asyncio.to_thread(self._repository.get_images, task_id)
@@ -622,6 +516,7 @@ class DownloaderWorker(QThread):
                                             image=image,
                                             options=options,
                                             cancel_event=cancel_event,
+                                            byte_budget=byte_budget,
                                         )
                                     )
                     except* Exception as error_group:
@@ -634,12 +529,22 @@ class DownloaderWorker(QThread):
             if task.downloaded_images != task.total_images:
                 missing = task.total_images - task.downloaded_images
                 raise RuntimeError(f"{missing} images could not be downloaded")
-            if options.pack_to_zip:
-                await asyncio.to_thread(
-                    self._create_archive,
-                    Path(task.save_path),
-                    options.delete_original_after_pack,
-                )
+            images = await asyncio.to_thread(self._repository.get_images, task_id)
+            current_files = await asyncio.to_thread(
+                current_output_files,
+                task,
+                images,
+                options,
+                cfg.max_image_pixels,
+            )
+            await asyncio.to_thread(
+                reconcile_artifacts,
+                task_id=task.id,
+                source_directory=Path(task.save_path),
+                current_files=current_files,
+                pack_to_zip=options.pack_to_zip,
+                delete_originals=options.delete_original_after_pack,
+            )
             await asyncio.to_thread(self._repository.update_task_status, task_id, TaskStatus.COMPLETED)
             self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
         except Exception as error:
@@ -657,6 +562,7 @@ class DownloaderWorker(QThread):
             with self._lock:
                 self._cancel_events.pop(task_id, None)
                 self._active_tasks.pop(task_id, None)
+                self._progress_locks.pop(task_id, None)
                 pending_deletion = self._pending_deletions.pop(task_id, None)
             if pending_deletion is not None:
                 deletion_succeeded = True
@@ -670,11 +576,18 @@ class DownloaderWorker(QThread):
                     deletion_succeeded = False
                     logger.error("Deferred artifact deletion failed", task_id=task_id, error=str(error))
                 if deletion_succeeded:
-                    await asyncio.to_thread(self._repository.delete_task, task_id)
+                    try:
+                        await asyncio.to_thread(self._repository.delete_task, task_id)
+                        self.signals.task_deletion_result.emit(task_id, True, "")
+                    except Exception as error:
+                        logger.error("Deferred database deletion failed", task_id=task_id, error=str(error))
+                        self.signals.task_deletion_result.emit(task_id, False, str(error))
+                else:
+                    self.signals.task_deletion_result.emit(task_id, False, "Artifact deletion failed")
             self._update_badge()
             self._check_queue()
 
-    async def _monitor_loop(self):
+    async def _monitor_loop(self) -> None:
         while True:
             try:
                 speed = await self._speed_monitor.get_and_reset()
@@ -695,7 +608,7 @@ class DownloaderWorker(QThread):
                 logger.error(f"Monitor loop error: {e}")
             await asyncio.sleep(1.0)
 
-    def run(self):
+    def run(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._connection_limiter = AdjustableLimiter(cfg.global_max_connections)
@@ -713,8 +626,20 @@ class DownloaderWorker(QThread):
         with contextlib.suppress(Exception):
             self._loop.close()
 
-    def stop(self):
-        # Cancel all active tasks to allow clean exit
+    async def _cancel_loop_tasks(self) -> None:
+        """Cancel and drain every task owned by the downloader event loop."""
+        current_task = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks() if task is not current_task]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=8.0)
+            if pending:
+                logger.warning("Downloader tasks did not stop within timeout", pending=len(pending))
+
+    def stop(self) -> None:
+        """Request cancellation, drain the event loop, and join the worker thread."""
+        self._stopping = True
         loop = self._loop
         with self._lock:
             for cancel_event in self._cancel_events.values():
@@ -722,17 +647,13 @@ class DownloaderWorker(QThread):
                     loop.call_soon_threadsafe(cancel_event.set)
 
         if loop is not None and loop.is_running():
+            shutdown_future = asyncio.run_coroutine_threadsafe(self._cancel_loop_tasks(), loop)
+            try:
+                shutdown_future.result(timeout=9.0)
+            except FutureTimeoutError:
+                logger.warning("Downloader event loop cancellation timed out")
+            finally:
+                loop.call_soon_threadsafe(loop.stop)
 
-            def shutdown_tasks():
-                tasks = [task for task in asyncio.all_tasks(loop) if task is not asyncio.current_task(loop)]
-                for t in tasks:
-                    t.cancel()
-                loop.call_later(1.0, loop.stop)
-
-            loop.call_soon_threadsafe(shutdown_tasks)
-
-        self.wait(2000)
-
-
-# 全局单例调度器
-downloader_manager = DownloaderWorker()
+        if self.isRunning() and not self.wait(10_000):
+            logger.error("Downloader thread did not stop within timeout")

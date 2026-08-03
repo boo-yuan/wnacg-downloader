@@ -10,14 +10,14 @@ if errorlevel 1 (
 )
 
 echo [WNACG Downloader] 正在按锁文件同步依赖...
-uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" sync --locked
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" sync --locked --no-dev
 if errorlevel 1 (
     echo [错误] 依赖同步失败，请检查网络和代理配置。
     exit /b 1
 )
 
 echo [WNACG Downloader] 正在启动应用程序...
-uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked wnacg-downloader %*
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked --no-dev wnacg-downloader %*
 if errorlevel 1 (
     echo [错误] 应用程序异常退出。
     exit /b 1

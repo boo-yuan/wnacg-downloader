@@ -18,8 +18,7 @@ class DataDirectorySettings(BaseSettings):
 
 def _default_data_dir() -> Path:
     if os.name == "nt":
-        appdata_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-        return Path(appdata_base) / "wnacg-downloader" if appdata_base else Path.home() / "wnacg-downloader"
+        return Path.home() / "AppData" / "Local" / "wnacg-downloader"
     return Path.home() / ".local" / "share" / "wnacg-downloader"
 
 
@@ -40,25 +39,46 @@ def _copy_missing(source: Path, destination: Path, warnings: list[str]) -> None:
         warnings.append(f"Legacy migration from {source} failed: {error}")
 
 
-def initialize_data_dir() -> tuple[Path, tuple[str, ...]]:
-    """Create the configured data directory and non-destructively copy legacy data."""
+def _configured_data_dir() -> Path:
+    """Resolve the configured data path without touching the filesystem."""
     settings = DataDirectorySettings()
-    data_dir = (settings.data_dir or _default_data_dir()).expanduser().resolve()
+    return (settings.data_dir or _default_data_dir()).expanduser().resolve()
+
+
+def initialize_data_dir(data_dir: Path) -> tuple[str, ...]:
+    """Create the configured data directory and non-destructively copy legacy data."""
     data_dir.mkdir(parents=True, exist_ok=True)
 
     warnings: list[str] = []
     application_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parents[3]
-    _copy_missing(Path(f"{data_dir}_bak"), data_dir, warnings)
-    _copy_missing(application_dir / "data", data_dir, warnings)
+    migration_marker = data_dir / ".legacy-migration-v1.complete"
+    if not migration_marker.exists():
+        _copy_missing(Path(f"{data_dir}_bak"), data_dir, warnings)
+        _copy_missing(application_dir / "data", data_dir, warnings)
 
-    old_log = application_dir / "app.log"
-    current_log = data_dir / "app.jsonl"
-    if old_log.is_file() and not current_log.exists():
-        try:
-            shutil.copy2(old_log, data_dir / "legacy-app.log")
-        except OSError as error:
-            warnings.append(f"Legacy log migration failed: {error}")
-    return data_dir, tuple(warnings)
+        old_log = application_dir / "app.log"
+        current_log = data_dir / "app.jsonl"
+        if old_log.is_file() and not current_log.exists():
+            try:
+                shutil.copy2(old_log, data_dir / "legacy-app.log")
+            except OSError as error:
+                warnings.append(f"Legacy log migration failed: {error}")
+        if not warnings:
+            migration_marker.write_text("completed\n", encoding="utf-8")
+    return tuple(warnings)
 
 
-DATA_DIR, PATH_MIGRATION_WARNINGS = initialize_data_dir()
+DATA_DIR = _configured_data_dir()
+CACHE_DIR = DATA_DIR / "cache"
+_path_migration_warnings: tuple[str, ...] = ()
+
+
+def initialize_paths() -> None:
+    """Create application-owned paths and run each legacy migration once."""
+    global _path_migration_warnings
+    _path_migration_warnings = initialize_data_dir(DATA_DIR)
+
+
+def path_migration_warnings() -> tuple[str, ...]:
+    """Return warnings produced by the explicit startup migration."""
+    return _path_migration_warnings

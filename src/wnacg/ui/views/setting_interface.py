@@ -1,19 +1,21 @@
 """Validated network, download, and application settings interfaces."""
 
 import asyncio
-import os
+import re
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import cast
 
 from bs4 import BeautifulSoup
-from curl_cffi.requests import Session
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QThread, QUrl, Signal, SignalInstance
+from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import QFileDialog, QWidget
 from qfluentwidgets import (
     ComboBox,
     DoubleSpinBox,
     EditableComboBox,
     ExpandLayout,
+    FluentIconBase,
     InfoBar,
     InfoBarPosition,
     LineEdit,
@@ -29,15 +31,23 @@ from qfluentwidgets import (
 from qfluentwidgets import FluentIcon as FIF
 
 from wnacg.domain.models import DownloadFormat, DownloadNaming
-from wnacg.infrastructure.config import ProxyMode, cfg
-from wnacg.infrastructure.logger import LOG_PATH
+from wnacg.infrastructure.config import AppConfig, ProxyMode, cfg
+from wnacg.infrastructure.crawler import WnacgCrawler
+from wnacg.infrastructure.logger import LOG_PATH, logger
+from wnacg.infrastructure.network_safety import (
+    ensure_expected_content_type,
+    ensure_public_https_url_sync,
+    read_limited_chunks,
+)
 from wnacg.infrastructure.updater import Updater
+
+type SettingIcon = str | QIcon | FluentIconBase
 
 
 class LineEditSettingCard(SettingCard):
     """Custom setting card for line edit input"""
 
-    def __init__(self, icon, title, content, parent=None):
+    def __init__(self, icon: SettingIcon, title: str, content: str, parent: QWidget | None = None) -> None:
         super().__init__(icon, title, content, parent)
         self.lineEdit = LineEdit(self)
         self.lineEdit.setClearButtonEnabled(True)
@@ -49,24 +59,31 @@ class LineEditSettingCard(SettingCard):
 class MySwitchSettingCard(SettingCard):
     """Custom setting card for switch button"""
 
-    def __init__(self, icon, title, content, parent=None):
+    def __init__(self, icon: SettingIcon, title: str, content: str, parent: QWidget | None = None) -> None:
         super().__init__(icon, title, content, parent)
         self.switchButton = SwitchButton(self)
         self.hBoxLayout.addWidget(self.switchButton, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)
 
-    def setChecked(self, isChecked: bool):
+    def setChecked(self, isChecked: bool) -> None:
         self.switchButton.setChecked(isChecked)
 
     @property
-    def checkedChanged(self):
+    def checkedChanged(self) -> SignalInstance:
         return self.switchButton.checkedChanged
 
 
 class ComboBoxSettingCard(SettingCard):
     """Custom setting card for combo box input"""
 
-    def __init__(self, icon, title, content, texts, parent=None):
+    def __init__(
+        self,
+        icon: SettingIcon,
+        title: str,
+        content: str,
+        texts: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(icon, title, content, parent)
         self.comboBox = ComboBox(self)
         self.comboBox.setFixedWidth(280)
@@ -78,7 +95,14 @@ class ComboBoxSettingCard(SettingCard):
 class EditableComboBoxSettingCard(SettingCard):
     """Custom setting card for editable combo box input"""
 
-    def __init__(self, icon, title, content, texts, parent=None):
+    def __init__(
+        self,
+        icon: SettingIcon,
+        title: str,
+        content: str,
+        texts: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(icon, title, content, parent)
         self.comboBox = EditableComboBox(self)
         self.comboBox.setFixedWidth(280)
@@ -88,7 +112,7 @@ class EditableComboBoxSettingCard(SettingCard):
 
 
 class SpinBoxSettingCard(SettingCard):
-    def __init__(self, icon, title, content, parent=None):
+    def __init__(self, icon: SettingIcon, title: str, content: str, parent: QWidget | None = None) -> None:
         super().__init__(icon, title, content, parent)
         self.spinBox = SpinBox(self)
         setFont(self.spinBox)
@@ -97,7 +121,7 @@ class SpinBoxSettingCard(SettingCard):
 
 
 class DoubleSpinBoxSettingCard(SettingCard):
-    def __init__(self, icon, title, content, parent=None):
+    def __init__(self, icon: SettingIcon, title: str, content: str, parent: QWidget | None = None) -> None:
         super().__init__(icon, title, content, parent)
         self.spinBox = DoubleSpinBox(self)
         setFont(self.spinBox)
@@ -108,28 +132,32 @@ class DoubleSpinBoxSettingCard(SettingCard):
 class DomainFetchWorker(QThread):
     finished_signal = Signal(list)
 
-    def run(self):
+    def run(self) -> None:
         try:
             domains = self.fetch()
             self.finished_signal.emit(domains)
-        except Exception:
-            pass
+        except Exception as error:
+            logger.warning("Domain discovery failed", error=str(error))
+            self.finished_signal.emit([])
 
-    def fetch(self):
-        domains = []
+    def fetch(self) -> list[str]:
+        domains: list[str] = []
         try:
-            kwargs = {"impersonate": "chrome120", "timeout": 10}
-            if cfg.proxy_mode == "custom":
-                kwargs["proxies"] = cfg.curl_cffi_proxies
-            elif cfg.proxy_mode == "direct":
-                kwargs["trust_env"] = False
-            else:
-                kwargs["trust_env"] = True
-
-            with Session(**kwargs) as s:
-                r = s.get("https://wnacg01.link/")
+            discovery_url = ensure_public_https_url_sync("https://wnacg01.link/")
+            with WnacgCrawler.get_sync_client() as client:
+                r = client.get(discovery_url, timeout=10.0, stream=True)
                 if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, "html.parser")
+                    ensure_public_https_url_sync(str(r.url), allowed_hosts={"wnacg01.link"})
+                    ensure_expected_content_type(r.headers, {"text/html", "application/xhtml+xml"})
+                    chunks = cast(
+                        Iterable[bytes],
+                        r.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                    )
+                    html = read_limited_chunks(chunks, cfg.max_html_bytes).decode(
+                        r.encoding or "utf-8",
+                        errors="replace",
+                    )
+                    soup = BeautifulSoup(html, "html.parser")
                     lis = soup.select(".content-top ul li")
                     if len(lis) > 3:
                         lis = lis[2:-1]
@@ -139,48 +167,43 @@ class DomainFetchWorker(QThread):
                         text = a.text.replace("\xa0", " ").strip() if a else li.text.replace("\xa0", " ").strip()
 
                         text = text.replace("https://", "").replace("http://", "").replace("/", "").strip()
-                        if text and text not in domains:
-                            domains.append(text)
-        except Exception:
-            pass
+                        if text and re.fullmatch(r"(?:www\.)?wnacg(?:[a-z0-9-]*\.)[a-z]{2,}", text, re.IGNORECASE):
+                            domain = AppConfig.validate_domain(text)
+                            if domain not in domains:
+                                domains.append(domain)
+        except Exception as error:
+            logger.warning("Official domain list parsing failed", error=str(error))
         return domains
 
 
 class UpdateCheckWorker(QThread):
     finished_signal = Signal(dict)
 
-    def run(self):
+    def run(self) -> None:
+        loop = asyncio.new_event_loop()
         try:
-            loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(Updater.check_update())
-            loop.close()
             self.finished_signal.emit(result.model_dump())
         except Exception as e:
             self.finished_signal.emit({"has_update": False, "error": str(e)})
+        finally:
+            loop.close()
 
 
 class NetworkTestWorker(QThread):
     finished_signal = Signal(bool, str)
 
-    def run(self):
+    def run(self) -> None:
         try:
             import time
 
-            from curl_cffi.requests import Session
-
-            kwargs = {"impersonate": "chrome120", "timeout": 15}
-            if cfg.proxy_mode == "custom":
-                kwargs["proxies"] = cfg.curl_cffi_proxies
-            elif cfg.proxy_mode == "direct":
-                kwargs["trust_env"] = False
-            else:
-                kwargs["trust_env"] = True
-
             start_time = time.time()
-            with Session(**kwargs) as s:
+            with WnacgCrawler.get_sync_client() as s:
                 domain = cfg.domain if cfg.domain.startswith("http") else f"https://{cfg.domain}"
-                r = s.get(domain)
+                domain = ensure_public_https_url_sync(domain, allowed_hosts={cfg.domain})
+                r = s.get(domain, timeout=15.0, stream=True)
+                ensure_public_https_url_sync(str(r.url), allowed_hosts=set(cfg.backup_domains))
 
             elapsed = time.time() - start_time
             if r.status_code == 200:
@@ -188,11 +211,11 @@ class NetworkTestWorker(QThread):
             else:
                 self.finished_signal.emit(False, f"HTTP状态码异常: {r.status_code}")
         except Exception as e:
-            self.finished_signal.emit(False, f"连接失败: {str(e)}")
+            self.finished_signal.emit(False, f"连接失败: {e!s}")
 
 
 class BaseSettingInterface(ScrollArea):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self.scrollWidget = QWidget()
         self.expandLayout = ExpandLayout(self.scrollWidget)
@@ -204,13 +227,14 @@ class BaseSettingInterface(ScrollArea):
 
 
 class NetworkSettingInterface(BaseSettingInterface):
-    def __init__(self, parent=None):
+    def __init__(self, apply_runtime_limits: Callable[[], None], parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
+        self._apply_runtime_limits = apply_runtime_limits
         self.setObjectName("NetworkSettingInterface")
         self._init_proxy_settings()
         self._init_system_settings()
 
-    def _init_proxy_settings(self):
+    def _init_proxy_settings(self) -> None:
         self.proxyGroup = SettingCardGroup("网络与代理", self.scrollWidget)
 
         self.proxyModeCard = ComboBoxSettingCard(
@@ -273,7 +297,7 @@ class NetworkSettingInterface(BaseSettingInterface):
 
         self.expandLayout.addWidget(self.proxyGroup)
 
-    def _test_network(self):
+    def _test_network(self) -> None:
         self.testNetworkCard.button.setEnabled(False)
         self.testNetworkCard.button.setText("测试中...")
 
@@ -281,7 +305,7 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.test_worker.finished_signal.connect(self._on_test_network_finished)
         self.test_worker.start()
 
-    def _on_test_network_finished(self, success: bool, msg: str):
+    def _on_test_network_finished(self, success: bool, msg: str) -> None:
         self.testNetworkCard.button.setEnabled(True)
         self.testNetworkCard.button.setText("开始测试")
         if success:
@@ -299,7 +323,7 @@ class NetworkSettingInterface(BaseSettingInterface):
                 position=InfoBarPosition.TOP_RIGHT,
             )
 
-    def _init_system_settings(self):
+    def _init_system_settings(self) -> None:
         self.concurrentGroup = SettingCardGroup("下载性能调节", self.scrollWidget)
 
         self.maxTasksCard = SpinBoxSettingCard(
@@ -350,45 +374,55 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.concurrentGroup.addSettingCard(self.globalSpeedLimitCard)
         self.expandLayout.addWidget(self.concurrentGroup)
 
-    def _on_proxy_mode_changed(self, index: int):
+    def _on_proxy_mode_changed(self, index: int) -> None:
         modes = [ProxyMode.SYSTEM, ProxyMode.DIRECT, ProxyMode.CUSTOM]
         cfg.proxy_mode = modes[index]
         cfg.save()
 
-    def _on_custom_proxy_changed(self, text: str):
-        cfg.custom_proxy = text
-        cfg.save()
+    def _on_custom_proxy_changed(self, text: str) -> None:
+        try:
+            cfg.custom_proxy = text
+            cfg.save()
+        except ValueError as error:
+            self.customProxyCard.lineEdit.setText(cfg.custom_proxy)
+            InfoBar.error("代理地址无效", str(error), parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
-    def _on_max_tasks_changed(self, value: int):
+    def _on_max_tasks_changed(self, value: int) -> None:
         cfg.max_concurrent_tasks = value
         cfg.save()
-        from wnacg.application.downloader import downloader_manager
+        self._apply_runtime_limits()
 
-        downloader_manager.apply_runtime_limits()
-
-    def _on_global_connections_changed(self, value: int):
+    def _on_global_connections_changed(self, value: int) -> None:
         cfg.global_max_connections = value
         cfg.save()
-        from wnacg.application.downloader import downloader_manager
+        self._apply_runtime_limits()
 
-        downloader_manager.apply_runtime_limits()
-
-    def _on_download_delay_changed(self, value: float):
+    def _on_download_delay_changed(self, value: float) -> None:
         cfg.download_delay = value
         cfg.save()
 
-    def _on_global_speed_limit_changed(self, value: int):
+    def _on_global_speed_limit_changed(self, value: int) -> None:
         cfg.global_speed_limit = value
         cfg.save()
 
-    def _on_domain_changed(self, text: str):
+    def _on_domain_changed(self, text: str) -> None:
         try:
             cfg.domain = text
             cfg.save()
-        except ValueError:
-            return
+        except ValueError as error:
+            self.domainCard.comboBox.setText(cfg.domain)
+            InfoBar.error("域名无效", str(error), parent=self.window(), position=InfoBarPosition.TOP_RIGHT)
 
-    def _fetch_latest_domains(self):
+    def stop_workers(self) -> None:
+        """Join network-setting workers before Qt object destruction."""
+        for attribute in ("test_worker", "fetch_worker"):
+            worker = cast(QThread | None, getattr(self, attribute, None))
+            if worker is not None:
+                worker.requestInterruption()
+                if worker.isRunning() and not worker.wait(16_000):
+                    logger.warning("Settings worker did not stop", worker=attribute)
+
+    def _fetch_latest_domains(self) -> None:
         self.fetchDomainCard.button.setText("获取中...")
         self.fetchDomainCard.button.setEnabled(False)
         self.fetch_worker = DomainFetchWorker(self)
@@ -396,7 +430,7 @@ class NetworkSettingInterface(BaseSettingInterface):
         self.fetch_worker.finished.connect(self.fetch_worker.deleteLater)
         self.fetch_worker.start()
 
-    def _on_domains_fetched(self, domains):
+    def _on_domains_fetched(self, domains: list[str]) -> None:
         self.fetchDomainCard.button.setText("获取")
         self.fetchDomainCard.button.setEnabled(True)
 
@@ -432,12 +466,12 @@ class NetworkSettingInterface(BaseSettingInterface):
 
 
 class DownloadSettingInterface(BaseSettingInterface):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self.setObjectName("DownloadSettingInterface")
         self._init_download_settings()
 
-    def _init_download_settings(self):
+    def _init_download_settings(self) -> None:
         self.sysGroup = SettingCardGroup("下载与存储", self.scrollWidget)
 
         self.downloadDirCard = PushSettingCard(
@@ -534,38 +568,38 @@ class DownloadSettingInterface(BaseSettingInterface):
         self.promptGroup.addSettingCard(self.deleteFilesOnCancelCard)
         self.expandLayout.addWidget(self.promptGroup)
 
-    def _on_show_cancel_prompt_changed(self, checked: bool):
+    def _on_show_cancel_prompt_changed(self, checked: bool) -> None:
         cfg.show_cancel_prompt = checked
         cfg.save()
 
-    def _on_delete_files_on_cancel_changed(self, checked: bool):
+    def _on_delete_files_on_cancel_changed(self, checked: bool) -> None:
         cfg.delete_files_on_cancel = checked
         cfg.save()
 
-    def _on_download_naming_changed(self, index: int):
+    def _on_download_naming_changed(self, index: int) -> None:
         modes = [DownloadNaming.ORIGINAL, DownloadNaming.SEQUENTIAL]
         cfg.download_naming = modes[index]
         cfg.save()
 
-    def _on_download_format_changed(self, index: int):
+    def _on_download_format_changed(self, index: int) -> None:
         formats = [DownloadFormat.ORIGINAL, DownloadFormat.JPG, DownloadFormat.PNG, DownloadFormat.WEBP]
         cfg.download_format = formats[index]
         cfg.save()
 
-    def _on_auto_start_changed(self, checked: bool):
+    def _on_auto_start_changed(self, checked: bool) -> None:
         cfg.auto_start_download = checked
         cfg.save()
 
-    def _on_pack_zip_changed(self, checked: bool):
+    def _on_pack_zip_changed(self, checked: bool) -> None:
         cfg.pack_to_zip = checked
         cfg.save()
         self.deleteOriginalCard.setEnabled(checked)
 
-    def _on_delete_original_changed(self, checked: bool):
+    def _on_delete_original_changed(self, checked: bool) -> None:
         cfg.delete_original_after_pack = checked
         cfg.save()
 
-    def _on_download_dir_clicked(self):
+    def _on_download_dir_clicked(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "选择下载保存目录", cfg.download_dir)
         if directory:
             cfg.download_dir = directory
@@ -574,12 +608,12 @@ class DownloadSettingInterface(BaseSettingInterface):
 
 
 class AboutSettingInterface(BaseSettingInterface):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent=parent)
         self.setObjectName("AboutSettingInterface")
         self._init_about_settings()
 
-    def _init_about_settings(self):
+    def _init_about_settings(self) -> None:
         self.aboutGroup = SettingCardGroup("系统与关于", self.scrollWidget)
 
         self.logCard = PushSettingCard(
@@ -593,11 +627,11 @@ class AboutSettingInterface(BaseSettingInterface):
 
         from PySide6.QtGui import QIcon
 
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
+        icon_path = Path(__file__).resolve().parents[2] / "resource" / "icon.png"
 
         self.helpCard = PushSettingCard(
             text="前往 GitHub",
-            icon=QIcon(icon_path) if os.path.exists(icon_path) else FIF.GITHUB,
+            icon=QIcon(str(icon_path)) if icon_path.exists() else FIF.GITHUB,
             title="WNACG Downloader",
             content="一款采用 Fluent 设计语言构建的高性能、跨平台 WNACG 漫画离线下载工具",
             parent=self.aboutGroup,
@@ -642,11 +676,11 @@ class AboutSettingInterface(BaseSettingInterface):
         self.aboutGroup.addSettingCard(self.aboutCard)
         self.expandLayout.addWidget(self.aboutGroup)
 
-    def _open_log_file(self):
+    def _open_log_file(self) -> None:
         LOG_PATH.touch(exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_PATH)))
 
-    def _on_close_action_changed(self, index: int):
+    def _on_close_action_changed(self, index: int) -> None:
         if index == 0:
             cfg.show_close_prompt = True
         elif index == 1:
@@ -657,7 +691,7 @@ class AboutSettingInterface(BaseSettingInterface):
             cfg.close_to_tray = False
         cfg.save()
 
-    def _check_update(self):
+    def _check_update(self) -> None:
         self.updateCard.button.setText("检查中...")
         self.updateCard.button.setEnabled(False)
         self.updateWorker = UpdateCheckWorker(self)
@@ -665,7 +699,7 @@ class AboutSettingInterface(BaseSettingInterface):
         self.updateWorker.finished.connect(self.updateWorker.deleteLater)
         self.updateWorker.start()
 
-    def _on_update_checked(self, result: dict):
+    def _on_update_checked(self, result: dict[str, object]) -> None:
         self.updateCard.button.setText("检查更新")
         self.updateCard.button.setEnabled(True)
 
@@ -684,7 +718,7 @@ class AboutSettingInterface(BaseSettingInterface):
             )
             if w.exec():
                 url = result.get("download_url")
-                if url:
+                if isinstance(url, str) and url:
                     from PySide6.QtCore import QUrl
                     from PySide6.QtGui import QDesktopServices
 
@@ -696,3 +730,11 @@ class AboutSettingInterface(BaseSettingInterface):
                 self.window(),
             )
             w.exec()
+
+    def stop_workers(self) -> None:
+        """Join the update checker before Qt object destruction."""
+        worker = cast(QThread | None, getattr(self, "updateWorker", None))
+        if worker is not None:
+            worker.requestInterruption()
+            if worker.isRunning() and not worker.wait(16_000):
+                logger.warning("Update worker did not stop")

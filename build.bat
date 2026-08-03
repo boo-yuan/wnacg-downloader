@@ -13,11 +13,11 @@ if errorlevel 1 (
 )
 
 echo [1/2] 正在按锁文件同步运行和构建依赖...
-uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" sync --locked --group build
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" sync --locked --no-dev --group build
 if errorlevel 1 exit /b 1
 
 echo [2/2] 正在构建单文件 Windows 程序...
-uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked --group build pyinstaller ^
+uv --cache-dir "%TEMP%\wnacg-downloader-uv-cache" run --locked --no-dev --group build pyinstaller ^
     --noconfirm ^
     --clean ^
     --onefile ^

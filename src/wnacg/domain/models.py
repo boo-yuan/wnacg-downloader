@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -13,6 +13,7 @@ class TaskStatus(StrEnum):
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+    MISSING = "missing"
     CANCELED = "canceled"
 
 
@@ -82,6 +83,15 @@ class DownloadTask(BaseModel):
     options: DownloadOptions | None = None
     error_message: str | None = Field(default=None, max_length=4_096)
 
+    @field_validator("total_images")
+    @classmethod
+    def validate_total_count(cls, value: int, info: ValidationInfo) -> int:
+        """Reject a total that would invalidate an existing downloaded count."""
+        downloaded = int(info.data.get("downloaded_images", 0))
+        if downloaded > value:
+            raise ValueError("downloaded_images cannot exceed total_images")
+        return value
+
     @field_validator("downloaded_images")
     @classmethod
     def validate_downloaded_count(cls, value: int, info: ValidationInfo) -> int:
@@ -91,6 +101,31 @@ class DownloadTask(BaseModel):
             raise ValueError("downloaded_images cannot exceed total_images")
         return value
 
+    @model_validator(mode="after")
+    def validate_progress_aggregate(self) -> "DownloadTask":
+        """Keep all progress fields mutually consistent after construction."""
+        if self.downloaded_images > self.total_images:
+            raise ValueError("downloaded_images cannot exceed total_images")
+        expected_progress = self.downloaded_images / self.total_images if self.total_images else 0.0
+        if abs(self.progress - expected_progress) > 1e-9:
+            raise ValueError("progress must match downloaded_images / total_images")
+        return self
+
+    def set_progress(self, downloaded_images: int, total_images: int) -> None:
+        """Validate and replace aggregate progress as one logical operation."""
+        progress = downloaded_images / total_images if total_images else 0.0
+        validated = type(self).model_validate(
+            {
+                **self.model_dump(),
+                "downloaded_images": downloaded_images,
+                "total_images": total_images,
+                "progress": progress,
+            }
+        )
+        object.__setattr__(self, "downloaded_images", validated.downloaded_images)
+        object.__setattr__(self, "total_images", validated.total_images)
+        object.__setattr__(self, "progress", validated.progress)
+
 
 _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset({TaskStatus.DOWNLOADING, TaskStatus.PAUSED, TaskStatus.CANCELED}),
@@ -99,7 +134,8 @@ _ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     ),
     TaskStatus.PAUSED: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
     TaskStatus.FAILED: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
-    TaskStatus.COMPLETED: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
+    TaskStatus.COMPLETED: frozenset({TaskStatus.PENDING, TaskStatus.MISSING, TaskStatus.CANCELED}),
+    TaskStatus.MISSING: frozenset({TaskStatus.PENDING, TaskStatus.CANCELED}),
     TaskStatus.CANCELED: frozenset(),
 }
 

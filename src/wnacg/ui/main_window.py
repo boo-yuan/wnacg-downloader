@@ -1,10 +1,11 @@
 """Main Fluent window, tray integration, and close behavior."""
 
 import contextlib
-import os
+from pathlib import Path
 
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CheckBox,
@@ -16,8 +17,11 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from wnacg.application.downloader import downloader_manager
+from wnacg.application.downloader import DownloaderWorker
+from wnacg.application.ports import TaskRepository
+from wnacg.domain.models import TaskStatus
 from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.logger import logger
 from wnacg.ui.views.download_interface import DownloadInterface
 from wnacg.ui.views.home_interface import HomeInterface
 from wnacg.ui.views.setting_interface import (
@@ -28,7 +32,7 @@ from wnacg.ui.views.setting_interface import (
 
 
 class ClosePromptDialog(MessageBoxBase):
-    def __init__(self, active_count=0, parent=None):
+    def __init__(self, active_count: int = 0, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.titleLabel = SubtitleLabel("确认关闭", self)
         self.checkbox = CheckBox("记住本次选择，下次不再提示", self)
@@ -55,28 +59,30 @@ class ClosePromptDialog(MessageBoxBase):
 
 
 class MainWindow(FluentWindow):
-    def __init__(self):
+    def __init__(self, downloader: DownloaderWorker, repository: TaskRepository) -> None:
         super().__init__()
+        self._downloader = downloader
+        self._repository = repository
         self.initWindow()
 
         # 初始化子页面
-        self.homeInterface = HomeInterface(self)
-        self.downloadInterface = DownloadInterface(self)
-        self.networkSettingInterface = NetworkSettingInterface(self)
+        self.homeInterface = HomeInterface(downloader, repository, self)
+        self.downloadInterface = DownloadInterface(downloader, repository, self)
+        self.networkSettingInterface = NetworkSettingInterface(downloader.apply_runtime_limits, self)
         self.downloadSettingInterface = DownloadSettingInterface(self)
         self.aboutSettingInterface = AboutSettingInterface(self)
 
         self.initNavigation()
         self._init_tray()
-        downloader_manager.signals.speed_update.connect(self._update_speed_title)
+        downloader.signals.speed_update.connect(self._update_speed_title)
 
-    def _update_speed_title(self, speed_str):
+    def _update_speed_title(self, speed_str: str) -> None:
         if speed_str:
             self.setWindowTitle(f"WNACG Downloader - {speed_str}")
         else:
             self.setWindowTitle("WNACG Downloader")
 
-    def changeEvent(self, event):
+    def changeEvent(self, event: QEvent) -> None:
         from PySide6.QtCore import QEvent
 
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
@@ -84,7 +90,7 @@ class MainWindow(FluentWindow):
                 card.update_download_state()
         super().changeEvent(event)
 
-    def initNavigation(self):
+    def initNavigation(self) -> None:
         self.addSubInterface(self.homeInterface, FIF.HOME, "漫画列表")
         self.addSubInterface(self.downloadInterface, FIF.DOWNLOAD, "任务列队")
 
@@ -98,16 +104,16 @@ class MainWindow(FluentWindow):
             from qfluentwidgets import setFont
 
             setFont(self.navigationInterface, 11)
-        except Exception:
-            pass
+        except Exception as error:
+            logger.warning("Navigation styling failed", error=str(error))
 
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
         if item:
             self.downloadBadge = None
 
-        downloader_manager.signals.badge_update.connect(self._update_badge)
+        self._downloader.signals.badge_update.connect(self._update_badge)
 
-    def _update_badge(self, count):
+    def _update_badge(self, count: int) -> None:
         item = self.navigationInterface.widget(self.downloadInterface.objectName())
         if not item:
             return
@@ -130,23 +136,23 @@ class MainWindow(FluentWindow):
 
         self._previous_count = count
 
-    def initWindow(self):
+    def initWindow(self) -> None:
         self.resize(1060, 960)
         self.setMinimumWidth(600)
         self.setMinimumHeight(800)
         self.setWindowTitle("WNACG Downloader")
 
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resource", "icon.png")
-        self.setWindowIcon(QIcon(icon_path))
+        icon_path = Path(__file__).resolve().parents[1] / "resource" / "icon.png"
+        self.setWindowIcon(QIcon(str(icon_path)))
 
         desktop = self.screen().availableGeometry()
         w, h = desktop.width(), desktop.height()
         self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
 
-    def _init_tray(self):
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resource", "icon.png")
+    def _init_tray(self) -> None:
+        icon_path = Path(__file__).resolve().parents[1] / "resource" / "icon.png"
         self.trayIcon = QSystemTrayIcon(self)
-        self.trayIcon.setIcon(QIcon(icon_path))
+        self.trayIcon.setIcon(QIcon(str(icon_path)))
 
         self.trayMenu = QMenu(self)
         self.showAction = QAction("显示主界面", self)
@@ -162,14 +168,13 @@ class MainWindow(FluentWindow):
         self.trayIcon.activated.connect(self._on_tray_activated)
         self.trayIcon.show()
 
-        downloader_manager.signals.task_status_changed.connect(self._on_task_status_for_tray)
+        self._downloader.signals.task_status_changed.connect(self._on_task_status_for_tray)
 
-    def _on_task_status_for_tray(self, task_id, status):
+    def _on_task_status_for_tray(self, task_id: str, status: TaskStatus) -> None:
         from wnacg.domain.models import TaskStatus
-        from wnacg.infrastructure.database import task_repository as db
 
         if status == TaskStatus.COMPLETED:
-            tasks = db.get_all_tasks()
+            tasks = self._repository.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
 
             if active_count == 0:
@@ -193,7 +198,7 @@ class MainWindow(FluentWindow):
                         3000,
                     )
             elif self.isHidden() or self.isMinimized():
-                task = db.get_task(task_id)
+                task = self._repository.get_task(task_id)
                 if task:
                     self.trayIcon.showMessage(
                         "✅ 单本下载成功",
@@ -202,29 +207,34 @@ class MainWindow(FluentWindow):
                         3000,
                     )
 
-    def _show_window(self):
+    def _show_window(self) -> None:
         self.showNormal()
         self.activateWindow()
 
-    def _on_tray_activated(self, reason):
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             if self.isHidden():
                 self._show_window()
             else:
                 self.hide()
 
-    def _force_quit(self):
+    def _force_quit(self) -> None:
         self.trayIcon.hide()
         from PySide6.QtWidgets import QApplication
 
         QApplication.quit()
 
-    def closeEvent(self, e: QCloseEvent):
+    def stop_workers(self) -> None:
+        """Stop UI-owned background workers before application shutdown."""
+        self.homeInterface.stop_workers()
+        self.networkSettingInterface.stop_workers()
+        self.aboutSettingInterface.stop_workers()
+
+    def closeEvent(self, e: QCloseEvent) -> None:
         if cfg.show_close_prompt:
             from wnacg.domain.models import TaskStatus
-            from wnacg.infrastructure.database import task_repository as db
 
-            tasks = db.get_all_tasks()
+            tasks = self._repository.get_all_tasks()
             active_count = sum(1 for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.DOWNLOADING))
 
             w = ClosePromptDialog(active_count, self.window())

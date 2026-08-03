@@ -1,0 +1,311 @@
+import asyncio
+from concurrent.futures import Future
+from io import BytesIO
+from pathlib import Path
+from typing import cast
+
+import pytest
+from curl_cffi.requests import AsyncSession, Response
+from PIL import Image
+
+from wnacg.application.download_limits import AdjustableLimiter, TaskByteBudget
+from wnacg.application.downloader import DownloaderWorker
+from wnacg.application.file_paths import archive_path
+from wnacg.application.ports import ImageRecord
+from wnacg.domain.models import Comic, DownloadOptions, DownloadTask, TaskStatus
+from wnacg.infrastructure.config import cfg
+
+
+class MemoryRepository:
+    """Small stateful persistence adapter used without patching implementation modules."""
+
+    def __init__(self, tasks: list[DownloadTask] | None = None) -> None:
+        self.tasks = {task.id: task for task in tasks or []}
+        self.images: dict[str, list[ImageRecord]] = {}
+        self.reset_called = False
+
+    def save_task(self, task: DownloadTask) -> None:
+        self.tasks[task.id] = task
+
+    def get_all_tasks(self) -> list[DownloadTask]:
+        return list(self.tasks.values())
+
+    def get_task(self, task_id: str) -> DownloadTask | None:
+        return self.tasks.get(task_id)
+
+    def get_task_by_aid(self, aid: str) -> DownloadTask | None:
+        return next((task for task in self.tasks.values() if task.comic.aid == aid), None)
+
+    def update_task_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        error_message: str | None = None,
+    ) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return False
+        task.status = status
+        task.error_message = error_message
+        return True
+
+    def claim_pending_task(self, task_id: str) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None or task.status is not TaskStatus.PENDING:
+            return False
+        task.status = TaskStatus.DOWNLOADING
+        return True
+
+    def update_task_progress(self, task_id: str, progress: float, downloaded: int, total: int) -> None:
+        task = self.tasks[task_id]
+        task.set_progress(downloaded, total)
+        assert task.progress == progress
+
+    def delete_task(self, task_id: str) -> None:
+        self.tasks.pop(task_id, None)
+        self.images.pop(task_id, None)
+
+    def reset_downloading_tasks(self) -> None:
+        self.reset_called = True
+        for task in self.tasks.values():
+            if task.status is TaskStatus.DOWNLOADING:
+                task.status = TaskStatus.PAUSED
+
+    def save_view_links(self, task_id: str, view_links: list[str]) -> None:
+        self.images[task_id] = [
+            ImageRecord(task_id=task_id, image_index=index, view_url=url, raw_url="", status="pending")
+            for index, url in enumerate(view_links)
+        ]
+
+    def save_raw_links(self, task_id: str, raw_urls: list[str]) -> None:
+        self.images[task_id] = [
+            ImageRecord(task_id=task_id, image_index=index, view_url="", raw_url=url, status="pending")
+            for index, url in enumerate(raw_urls)
+        ]
+
+    def get_images(self, task_id: str) -> list[ImageRecord]:
+        return self.images.get(task_id, [])
+
+    def update_image_raw_url(self, task_id: str, image_index: int, raw_url: str) -> None:
+        self.images[task_id][image_index]["raw_url"] = raw_url
+
+    def update_image_status(self, task_id: str, image_index: int, status: str) -> None:
+        self.images[task_id][image_index]["status"] = status
+
+
+class _ImageResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.url = "https://1.1.1.1/one.jpg"
+        self.headers = {"content-type": "image/jpeg", "content-length": str(len(payload))}
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        """Represent a successful response."""
+
+    async def aiter_content(self, chunk_size: int) -> object:
+        """Yield the payload using the client response protocol."""
+        del chunk_size
+        yield self._payload
+
+
+class _ImageClient:
+    def __init__(self, payload: bytes) -> None:
+        self._response = _ImageResponse(payload)
+
+    async def get(self, _url: str, **request_options: object) -> _ImageResponse:
+        del request_options
+        return self._response
+
+
+def test_prepare_marks_missing_artifacts_without_deleting_history(tmp_path: Path) -> None:
+    task = DownloadTask(
+        id="completed",
+        comic=Comic(aid="1", title="One"),
+        status=TaskStatus.COMPLETED,
+        save_path=str(tmp_path / "missing"),
+        download_root=str(tmp_path),
+    )
+    repository = MemoryRepository([task])
+    worker = DownloaderWorker(repository)
+
+    worker.prepare()
+    worker.prepare()
+
+    assert repository.reset_called
+    assert repository.tasks[task.id].status is TaskStatus.MISSING
+    assert "missing" in (repository.tasks[task.id].error_message or "").lower()
+
+
+def test_add_redownload_and_delete_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cfg, "download_dir", str(tmp_path))
+    monkeypatch.setattr(cfg, "auto_start_download", False)
+    repository = MemoryRepository()
+    worker = DownloaderWorker(repository)
+    comic = Comic(aid="2", title="Two")
+
+    task = worker.add_task(comic)
+    assert task.status is TaskStatus.PAUSED
+    assert Path(task.save_path).parent == tmp_path
+
+    task.status = TaskStatus.COMPLETED
+    task.set_progress(2, 2)
+    redownload = worker.add_task(comic)
+    assert redownload.id == task.id
+    assert redownload.status is TaskStatus.PAUSED
+    assert redownload.downloaded_images == 0
+
+    worker.delete_tasks([task.id], delete_files=False)
+    assert repository.get_task(task.id) is None
+
+
+def test_pause_resume_and_cancel_commands_update_repository(tmp_path: Path) -> None:
+    task = DownloadTask(
+        id="commands",
+        comic=Comic(aid="3", title="Three"),
+        status=TaskStatus.PENDING,
+        save_path=str(tmp_path / "Three [3]"),
+        download_root=str(tmp_path),
+    )
+    repository = MemoryRepository([task])
+    worker = DownloaderWorker(repository)
+    worker.pause_task(task.id)
+    assert task.status is TaskStatus.PAUSED
+
+    worker._loop = asyncio.new_event_loop()
+    worker._stopping = True
+    try:
+        worker.resume_task(task.id)
+        assert task.status is TaskStatus.PENDING
+        worker.cancel_task(task.id)
+        assert repository.get_task(task.id) is None
+    finally:
+        worker._loop.close()
+
+
+def test_delete_task_removes_only_validated_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cfg, "delete_files_on_cancel", True)
+    task_path = tmp_path / "Four [4]"
+    task_path.mkdir()
+    (task_path / "partial.jpg").write_bytes(b"partial")
+    zip_path = archive_path(task_path)
+    zip_path.write_bytes(b"archive")
+    task = DownloadTask(
+        id="delete-files",
+        comic=Comic(aid="4", title="Four"),
+        status=TaskStatus.PAUSED,
+        save_path=str(task_path),
+        download_root=str(tmp_path),
+    )
+    repository = MemoryRepository([task])
+
+    DownloaderWorker(repository).delete_tasks([task.id, "already-missing"], delete_files=True)
+
+    assert repository.get_task(task.id) is None
+    assert not task_path.exists()
+    assert not zip_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_process_task_completes_from_valid_existing_files(
+    tmp_path: Path,
+) -> None:
+    task_path = tmp_path / "Five [5]"
+    task_path.mkdir()
+    Image.new("RGB", (8, 8), "blue").save(task_path / "0001-one.jpg")
+    task = DownloadTask(
+        id="complete-existing",
+        comic=Comic(aid="5", title="Five"),
+        status=TaskStatus.PENDING,
+        save_path=str(task_path),
+        download_root=str(tmp_path),
+        options=DownloadOptions(),
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [
+        ImageRecord(
+            task_id=task.id,
+            image_index=0,
+            view_url="",
+            raw_url="https://img.example/one.png",
+            status="pending",
+        )
+    ]
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(2)
+    worker._active_tasks[task.id] = Future()
+
+    await worker._process_task(task.id)
+
+    assert task.status is TaskStatus.COMPLETED
+    assert task.progress == 1.0
+    assert repository.images[task.id][0]["status"] == "downloaded"
+    assert (task_path / ".wnacg-manifest.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_process_task_rejects_gallery_over_configured_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cfg, "max_gallery_images", 1)
+    task = DownloadTask(
+        id="too-many",
+        comic=Comic(aid="6", title="Six"),
+        status=TaskStatus.PENDING,
+        save_path=str(tmp_path / "Six [6]"),
+        download_root=str(tmp_path),
+        options=DownloadOptions(),
+    )
+    repository = MemoryRepository([task])
+    repository.save_raw_links(task.id, ["https://img.example/1.jpg", "https://img.example/2.jpg"])
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(2)
+    worker._active_tasks[task.id] = Future()
+
+    await worker._process_task(task.id)
+
+    assert task.status is TaskStatus.FAILED
+    assert "configured image limit" in (task.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_download_image_streams_valid_payload_and_persists_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cfg, "download_delay", 0.0)
+    payload_buffer = BytesIO()
+    Image.new("RGB", (8, 8), "green").save(payload_buffer, format="JPEG")
+    payload = payload_buffer.getvalue()
+    task = DownloadTask(
+        id="download-one",
+        comic=Comic(aid="7", title="Seven"),
+        save_path=str(tmp_path),
+        download_root=str(tmp_path.parent),
+        total_images=1,
+    )
+    image = ImageRecord(
+        task_id=task.id,
+        image_index=0,
+        view_url="",
+        raw_url="https://1.1.1.1/one.jpg",
+        status="pending",
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [image]
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(1)
+
+    succeeded = await worker._download_image(
+        client=cast(AsyncSession[Response], _ImageClient(payload)),
+        task=task,
+        image=image,
+        options=DownloadOptions(delay_seconds=0.0),
+        cancel_event=asyncio.Event(),
+        byte_budget=TaskByteBudget(1_000_000),
+    )
+
+    assert succeeded
+    assert task.progress == 1.0
+    assert repository.images[task.id][0]["status"] == "downloaded"
+    assert (tmp_path / "0001-one.jpg").exists()

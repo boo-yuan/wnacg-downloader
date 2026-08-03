@@ -20,7 +20,7 @@ from wnacg.infrastructure.paths import DATA_DIR
 
 DATABASE_PATH = DATA_DIR / "tasks.db"
 _BUSY_TIMEOUT_MILLISECONDS = 30_000
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 
 def _connect() -> sqlite3.Connection:
@@ -35,8 +35,15 @@ def _connect() -> sqlite3.Connection:
 @contextmanager
 def _transaction() -> Generator[sqlite3.Connection]:
     """Yield a connection and commit or roll back the transaction atomically."""
-    with closing(_connect()) as connection, connection:
-        yield connection
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
 
 def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
@@ -47,8 +54,14 @@ def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
 def initialize_database() -> None:
     """Create the database and migrate databases produced by legacy releases."""
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with closing(_connect()) as journal_connection:
+        journal_connection.execute("PRAGMA journal_mode = WAL")
     with _transaction() as connection:
-        connection.execute("PRAGMA journal_mode = WAL")
+        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current_version > _SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema version {current_version} is newer than supported version {_SCHEMA_VERSION}"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -59,10 +72,12 @@ def initialize_database() -> None:
                 url TEXT NOT NULL,
                 pic_count TEXT NOT NULL DEFAULT '',
                 date TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL,
-                progress REAL NOT NULL,
-                total_images INTEGER NOT NULL,
-                downloaded_images INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('pending', 'downloading', 'paused', 'completed', 'failed', 'missing', 'canceled')
+                ),
+                progress REAL NOT NULL CHECK (progress >= 0.0 AND progress <= 1.0),
+                total_images INTEGER NOT NULL CHECK (total_images >= 0),
+                downloaded_images INTEGER NOT NULL CHECK (downloaded_images >= 0 AND downloaded_images <= total_images),
                 save_path TEXT NOT NULL,
                 download_root TEXT NOT NULL DEFAULT '',
                 options_json TEXT,
@@ -78,7 +93,7 @@ def initialize_database() -> None:
                 image_index INTEGER NOT NULL,
                 view_url TEXT NOT NULL DEFAULT '',
                 raw_url TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'pending',
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'downloaded')),
                 PRIMARY KEY (task_id, image_index),
                 FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
             )
@@ -96,6 +111,52 @@ def initialize_database() -> None:
             connection.execute("ALTER TABLE tasks ADD COLUMN options_json TEXT")
 
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_aid ON tasks(aid)")
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS validate_task_progress_insert
+            BEFORE INSERT ON tasks
+            WHEN NEW.progress < 0.0 OR NEW.progress > 1.0
+              OR NEW.total_images < 0 OR NEW.downloaded_images < 0
+              OR NEW.downloaded_images > NEW.total_images
+              OR NEW.status NOT IN ('pending', 'downloading', 'paused', 'completed', 'failed', 'missing', 'canceled')
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid task aggregate');
+            END
+            """
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS validate_task_progress_update
+            BEFORE UPDATE ON tasks
+            WHEN NEW.progress < 0.0 OR NEW.progress > 1.0
+              OR NEW.total_images < 0 OR NEW.downloaded_images < 0
+              OR NEW.downloaded_images > NEW.total_images
+              OR NEW.status NOT IN ('pending', 'downloading', 'paused', 'completed', 'failed', 'missing', 'canceled')
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid task aggregate');
+            END
+            """
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS validate_image_status_insert
+            BEFORE INSERT ON images
+            WHEN NEW.status NOT IN ('pending', 'downloaded')
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid image status');
+            END
+            """
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS validate_image_status_update
+            BEFORE UPDATE ON images
+            WHEN NEW.status NOT IN ('pending', 'downloaded')
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid image status');
+            END
+            """
+        )
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
@@ -183,14 +244,26 @@ def get_all_tasks() -> list[DownloadTask]:
     """Return all tasks, newest first."""
     with closing(_connect()) as connection:
         rows = connection.execute("SELECT * FROM tasks ORDER BY created_at DESC, id DESC").fetchall()
-    return [_task_from_row(row) for row in rows]
+    tasks: list[DownloadTask] = []
+    for row in rows:
+        try:
+            tasks.append(_task_from_row(row))
+        except (ValueError, ValidationError) as error:
+            logger.error("Quarantining invalid persisted task from listings", task_id=str(row["id"]), error=str(error))
+    return tasks
 
 
 def get_task(task_id: str) -> DownloadTask | None:
     """Return a task by identifier."""
     with closing(_connect()) as connection:
         row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    return _task_from_row(row) if row is not None else None
+    if row is None:
+        return None
+    try:
+        return _task_from_row(row)
+    except (ValueError, ValidationError) as error:
+        logger.error("Invalid persisted task cannot be loaded", task_id=task_id, error=str(error))
+        return None
 
 
 def get_task_by_aid(aid: str) -> DownloadTask | None:
@@ -200,28 +273,51 @@ def get_task_by_aid(aid: str) -> DownloadTask | None:
             "SELECT * FROM tasks WHERE aid = ? ORDER BY created_at DESC, id DESC LIMIT 1",
             (aid,),
         ).fetchone()
-    return _task_from_row(row) if row is not None else None
+    if row is None:
+        return None
+    try:
+        return _task_from_row(row)
+    except (ValueError, ValidationError) as error:
+        logger.error("Invalid persisted task cannot be loaded", task_id=str(row["id"]), error=str(error))
+        return None
 
 
 def update_task_status(
     task_id: str,
     status: TaskStatus,
     error_message: str | None = None,
-) -> None:
+) -> bool:
     """Persist a task status and its optional failure message."""
     with _transaction() as connection:
         row = connection.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
-            return
+            return False
         validate_status_transition(TaskStatus(str(row["status"])), status)
-        connection.execute(
+        cursor = connection.execute(
             "UPDATE tasks SET status = ?, error_message = ? WHERE id = ?",
             (status.value, error_message, task_id),
         )
+        return cursor.rowcount == 1
+
+
+def claim_pending_task(task_id: str) -> bool:
+    """Atomically claim exactly one pending task for a downloader process."""
+    with _transaction() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE tasks
+            SET status = ?, error_message = NULL
+            WHERE id = ? AND status = ?
+            """,
+            (TaskStatus.DOWNLOADING.value, task_id, TaskStatus.PENDING.value),
+        )
+        return cursor.rowcount == 1
 
 
 def update_task_progress(task_id: str, progress: float, downloaded: int, total: int) -> None:
     """Persist aggregate image progress for a task."""
+    if total < 0 or downloaded < 0 or downloaded > total or not 0.0 <= progress <= 1.0:
+        raise ValueError("Invalid task progress aggregate")
     with _transaction() as connection:
         connection.execute(
             """
@@ -322,6 +418,7 @@ class SQLiteTaskRepository:
     get_task = staticmethod(get_task)
     get_task_by_aid = staticmethod(get_task_by_aid)
     update_task_status = staticmethod(update_task_status)
+    claim_pending_task = staticmethod(claim_pending_task)
     update_task_progress = staticmethod(update_task_progress)
     delete_task = staticmethod(delete_task)
     reset_downloading_tasks = staticmethod(reset_downloading_tasks)

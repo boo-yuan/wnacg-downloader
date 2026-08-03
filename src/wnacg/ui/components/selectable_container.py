@@ -1,14 +1,27 @@
 """Reusable mouse and keyboard multi-selection container."""
 
+from typing import Protocol, cast
+
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QRubberBand, QWidget
 
 
+class SelectableItem(Protocol):
+    """Structural type shared by selectable card widgets."""
+
+    _is_selected: bool
+
+    def setSelected(self, selected: bool) -> None: ...
+    def geometry(self) -> QRect: ...
+    def isVisible(self) -> bool: ...
+    def objectName(self) -> str: ...
+
+
 class SelectableContainer(QWidget):
     selectionChanged = Signal()  # emitted when selection changes
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.rubberBand = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self.origin = QPoint()
@@ -16,23 +29,23 @@ class SelectableContainer(QWidget):
         self.is_dragging = False
         self._pre_drag_selection = {}
 
-    def get_selectable_items(self):
+    def get_selectable_items(self) -> list[SelectableItem]:
         # Return all visible children that have a 'setSelected' method
-        items = []
+        items: list[SelectableItem] = []
         for child in self.children():
             if isinstance(child, QWidget) and child.isVisible() and hasattr(child, "setSelected"):
-                items.append(child)
+                items.append(cast(SelectableItem, child))
         return items
 
-    def _get_item_at(self, pos: QPoint):
+    def get_item_at(self, pos: QPoint) -> SelectableItem | None:
         for item in self.get_selectable_items():
             if item.geometry().contains(pos):
                 return item
         return None
 
-    def mousePressEvent(self, event: QMouseEvent):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            item = self._get_item_at(event.pos())
+            item = self.get_item_at(event.pos())
             items = self.get_selectable_items()
 
             if item:
@@ -76,7 +89,7 @@ class SelectableContainer(QWidget):
 
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event: QMouseEvent):
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self.is_dragging:
             rect = QRect(self.origin, event.pos()).normalized()
             self.rubberBand.setGeometry(rect)
@@ -98,7 +111,7 @@ class SelectableContainer(QWidget):
 
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self.is_dragging:
             self.rubberBand.hide()
             self.is_dragging = False
@@ -110,7 +123,7 @@ class SelectableContainer(QWidget):
 
         super().mouseReleaseEvent(event)
 
-    def clear_selection(self, emit=True):
+    def clear_selection(self, emit: bool = True) -> None:
         changed = False
         for item in self.get_selectable_items():
             if getattr(item, "_is_selected", False):
@@ -119,10 +132,10 @@ class SelectableContainer(QWidget):
         if emit and changed:
             self.selectionChanged.emit()
 
-    def select_all(self):
+    def select_all(self) -> None:
         for item in self.get_selectable_items():
             item.setSelected(True)
         self.selectionChanged.emit()
 
-    def get_selected_items(self):
+    def get_selected_items(self) -> list[SelectableItem]:
         return [i for i in self.get_selectable_items() if getattr(i, "_is_selected", False)]

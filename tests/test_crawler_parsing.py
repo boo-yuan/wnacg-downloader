@@ -1,3 +1,5 @@
+import pytest
+
 from wnacg.infrastructure.crawler import WnacgCrawler
 
 
@@ -34,3 +36,18 @@ def test_view_page_parser_returns_links_and_page_count() -> None:
         "https://example.test/photos-view-id-1.html",
         "https://example.test/photos-view-id-2.html",
     ]
+
+
+def test_gallery_and_raw_url_parsers() -> None:
+    gallery_html = """<script>var imglist = [{url: fast_img_host+'//img.example/1.jpg'}];</script>"""
+    assert WnacgCrawler._parse_gallery_urls(gallery_html, "https://www.wnacg.com") == ["https://img.example/1.jpg"]
+    assert WnacgCrawler._parse_raw_url('<img id="picarea" src="//img.example/2.jpg">') == ("https://img.example/2.jpg")
+    assert WnacgCrawler._parse_raw_url("<html></html>") == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("20图", 20), ("unknown", None), ("共 300 張", 300)],
+)
+def test_expected_count(value: str, expected: int | None) -> None:
+    assert WnacgCrawler.expected_count(value) == expected

@@ -1,7 +1,11 @@
 """Search, pagination, preload, and gallery-card presentation."""
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+import time
+from pathlib import Path
+from typing import cast
+
+from PySide6.QtCore import QPoint, QSemaphore, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
@@ -17,8 +21,9 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from wnacg.application.downloader import downloader_manager
-from wnacg.domain.models import Comic
+from wnacg.application.downloader import DownloaderWorker
+from wnacg.application.ports import TaskRepository
+from wnacg.domain.models import Comic, DownloadTask
 from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.ui.components.comic_card import ComicCard
 from wnacg.ui.components.selectable_container import SelectableContainer
@@ -27,28 +32,46 @@ from wnacg.ui.components.selectable_container import SelectableContainer
 class SearchWorker(QThread):
     result_signal = Signal(str, list, int, int)  # keyword, results, total_pages, page
     error_signal = Signal(str, str, int)  # keyword, error_message, page
+    _network_slots = QSemaphore(4)
 
-    def __init__(self, keyword, page, delay=0.0):
+    def __init__(self, keyword: str, page: int, delay: float = 0.0) -> None:
         super().__init__()
         self.keyword = keyword
         self.page = page
         self.delay = delay
 
-    def run(self):
+    def run(self) -> None:
+        if not self._network_slots.tryAcquire(1):
+            self.error_signal.emit(self.keyword, "搜索任务过多，请稍后重试", self.page)
+            return
         try:
             if self.delay > 0:
-                import time
-
-                time.sleep(self.delay)
+                remaining_milliseconds = int(self.delay * 1_000)
+                while remaining_milliseconds > 0 and not self.isInterruptionRequested():
+                    interval = min(100, remaining_milliseconds)
+                    self.msleep(interval)
+                    remaining_milliseconds -= interval
+            if self.isInterruptionRequested():
+                return
             results, total_pages = WnacgCrawler.search_sync(self.keyword, self.page)
-            self.result_signal.emit(self.keyword, results, total_pages, self.page)
+            if not self.isInterruptionRequested():
+                self.result_signal.emit(self.keyword, results, total_pages, self.page)
         except Exception as e:
             self.error_signal.emit(self.keyword, str(e), self.page)
+        finally:
+            self._network_slots.release(1)
 
 
 class HomeInterface(QWidget):
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        downloader: DownloaderWorker,
+        repository: TaskRepository,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent=parent)
+        self._downloader = downloader
+        self._repository = repository
         self.setObjectName("HomeInterface")
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(24, 24, 24, 24)
@@ -69,14 +92,12 @@ class HomeInterface(QWidget):
         heroLayout.setContentsMargins(0, 0, 0, 0)
         heroLayout.setSpacing(12)
 
-        import os
-
         from PySide6.QtGui import QPixmap
         from qfluentwidgets import SubtitleLabel, ThemeColor, TitleLabel
 
         self.logoImage = QLabel(self)
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
-        pixmap = QPixmap(icon_path)
+        icon_path = Path(__file__).resolve().parents[2] / "resource" / "icon.png"
+        pixmap = QPixmap(str(icon_path))
         if not pixmap.isNull():
             pixmap = pixmap.scaled(
                 100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
@@ -158,8 +179,8 @@ class HomeInterface(QWidget):
         self.shortcut_select_all.activated.connect(self.scrollWidget.select_all)
 
         self.contentLayout.addWidget(self.scrollArea)
-        downloader_manager.signals.task_added.connect(self._on_task_state_changed)
-        downloader_manager.signals.task_status_changed.connect(self._on_task_state_changed)
+        downloader.signals.task_added.connect(self._on_task_state_changed)
+        downloader.signals.task_status_changed.connect(self._on_task_state_changed)
         self._init_bottom_layout()
 
         # 返回顶部悬浮按钮
@@ -174,7 +195,7 @@ class HomeInterface(QWidget):
         self.backToTopBtn.clicked.connect(lambda: self.scrollArea.verticalScrollBar().setValue(0))
         self.scrollArea.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
-    def _show_hint(self):
+    def _show_hint(self) -> None:
         InfoBar.info(
             title="💡 操作提示",
             content="支持鼠标框选 / Shift连选 / Ctrl+A全选\n右键卡片可进行批量下载",
@@ -185,25 +206,23 @@ class HomeInterface(QWidget):
             parent=self,
         )
 
-    def _on_scroll(self, value):
+    def _on_scroll(self, value: int) -> None:
         if value > 300:
             self.backToTopBtn.show()
         else:
             self.backToTopBtn.hide()
 
-    def resizeEvent(self, e):
+    def resizeEvent(self, e: QResizeEvent) -> None:
         super().resizeEvent(e)
         self.backToTopBtn.move(self.width() - 80, self.height() - 100)
 
-    def _on_task_state_changed(self, *args):
+    def _on_task_state_changed(self, *args: object) -> None:
         aid_to_update = None
-        if len(args) == 1 and hasattr(args[0], "comic"):
+        if len(args) == 1 and isinstance(args[0], DownloadTask):
             aid_to_update = args[0].comic.aid
         elif len(args) >= 1 and isinstance(args[0], str):
             task_id = args[0]
-            from wnacg.infrastructure.database import task_repository as db
-
-            task = db.get_task(task_id)
+            task = self._repository.get_task(task_id)
             if task and task.comic:
                 aid_to_update = task.comic.aid
 
@@ -214,7 +233,7 @@ class HomeInterface(QWidget):
                 if hasattr(card, "update_download_state"):
                     card.update_download_state()
 
-    def _init_bottom_layout(self):
+    def _init_bottom_layout(self) -> None:
         self._init_empty_state()
         self._init_loading_state()
 
@@ -232,19 +251,17 @@ class HomeInterface(QWidget):
         self.total_pages = 1
         self.worker = None
 
-    def _init_empty_state(self):
+    def _init_empty_state(self) -> None:
         self.emptyWidget = QWidget(self)
         emptyLayout = QVBoxLayout(self.emptyWidget)
         emptyLayout.setSpacing(12)
-
-        import os
 
         from PySide6.QtGui import QPixmap
         from qfluentwidgets import SubtitleLabel, TitleLabel
 
         self.emptyImage = QLabel(self)
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "resource", "icon.png"))
-        pixmap = QPixmap(icon_path)
+        icon_path = Path(__file__).resolve().parents[2] / "resource" / "icon.png"
+        pixmap = QPixmap(str(icon_path))
         if not pixmap.isNull():
             pixmap = pixmap.scaled(
                 100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
@@ -269,7 +286,7 @@ class HomeInterface(QWidget):
         self.contentLayout.addWidget(self.emptyWidget)
         self.emptyWidget.hide()
 
-    def _init_loading_state(self):
+    def _init_loading_state(self) -> None:
         from qfluentwidgets import ProgressRing, SubtitleLabel
 
         self.loadingWidget = QWidget(self)
@@ -292,7 +309,7 @@ class HomeInterface(QWidget):
         self.contentLayout.addWidget(self.loadingWidget)
         self.loadingWidget.hide()
 
-    def _update_pagination(self):
+    def _update_pagination(self) -> None:
         # Clear existing
         while self.paginationLayout.count():
             item = self.paginationLayout.takeAt(0)
@@ -314,7 +331,7 @@ class HomeInterface(QWidget):
         for i in range(max(1, self.current_page - 2), min(self.total_pages, self.current_page + 2) + 1):
             pages_to_show.add(i)
 
-        sorted_pages = sorted(list(pages_to_show))
+        sorted_pages = sorted(pages_to_show)
 
         prevBtn = PushButton("<", self.bottomWidget)
         prevBtn.setEnabled(self.current_page > 1)
@@ -353,9 +370,11 @@ class HomeInterface(QWidget):
         for p in visible_pages:
             self._preload_page(p)
 
-    def _preload_page(self, page):
+    def _preload_page(self, page: int) -> None:
         cache_key = (self.current_keyword, page)
         if cache_key in self._search_cache or cache_key in self._preloading_pages:
+            return
+        if len(self.workers) >= 4:
             return
 
         self._preloading_pages.add(cache_key)
@@ -370,7 +389,7 @@ class HomeInterface(QWidget):
         self.workers[cache_key] = w
         w.start()
 
-    def _on_preload_result(self, keyword, results, total_pages, page):
+    def _on_preload_result(self, keyword: str, results: list[Comic], total_pages: int, page: int) -> None:
         cache_key = (keyword, page)
         self._preloading_pages.discard(cache_key)
         if keyword != self.current_keyword:
@@ -383,13 +402,13 @@ class HomeInterface(QWidget):
 
         self._search_cache[cache_key] = (results, total_pages)
 
-    def _on_preload_error(self, keyword, err_msg, page):
+    def _on_preload_error(self, keyword: str, err_msg: str, page: int) -> None:
         cache_key = (keyword, page)
         self._preloading_pages.discard(cache_key)
         if keyword != self.current_keyword:
             return
 
-    def do_search(self, keyword: str):
+    def do_search(self, keyword: str) -> None:
         if not keyword.strip():
             return
 
@@ -404,22 +423,22 @@ class HomeInterface(QWidget):
         self._search_cache.clear()
         self._load_data()
 
-    def go_to_page(self, page):
+    def go_to_page(self, page: int) -> None:
         self.current_page = page
         self._load_data()
 
-    def prev_page(self):
+    def prev_page(self) -> None:
         if self.current_page > 1:
             self.current_page -= 1
             self._load_data()
 
-    def next_page(self):
+    def next_page(self) -> None:
         if not self.current_keyword:
             return
         self.current_page += 1
         self._load_data()
 
-    def _load_data(self):
+    def _load_data(self) -> None:
         self.searchBar.setEnabled(False)
         self.bottomWidget.setEnabled(False)
 
@@ -427,7 +446,7 @@ class HomeInterface(QWidget):
             item = self.flowLayout.takeAt(0)
             if item is None:
                 continue
-            widget = item if isinstance(item, QWidget) else item.widget()
+            widget = item
             if widget:
                 widget.deleteLater()
         self.card_map.clear()
@@ -454,6 +473,7 @@ class HomeInterface(QWidget):
             if self.worker is not None:
                 self.worker.result_signal.disconnect()
                 self.worker.error_signal.disconnect()
+                self.worker.requestInterruption()
                 self._old_workers.append(self.worker)
 
             self.worker = SearchWorker(self.current_keyword, self.current_page)
@@ -463,12 +483,12 @@ class HomeInterface(QWidget):
             self.worker.finished.connect(lambda w=self.worker: self._cleanup_old_worker(w))
             self.worker.start()
 
-    def _cleanup_old_worker(self, w):
+    def _cleanup_old_worker(self, w: SearchWorker) -> None:
         if w in self._old_workers:
             self._old_workers.remove(w)
 
-    def _on_search_result(self, keyword, results, total_pages, page):
-        if keyword != self.current_keyword:
+    def _on_search_result(self, keyword: str, results: list[Comic], total_pages: int, page: int) -> None:
+        if keyword != self.current_keyword or page != self.current_page:
             return
 
         self.worker = None
@@ -482,10 +502,6 @@ class HomeInterface(QWidget):
         # update cache
         cache_key = (self.current_keyword, page)
         self._search_cache[cache_key] = (results, total_pages)
-
-        # If user rapidly clicked away, ignore this result rendering
-        if page != self.current_page:
-            return
 
         self.total_pages = total_pages
         self._update_pagination()
@@ -501,25 +517,35 @@ class HomeInterface(QWidget):
             self.scrollArea.show()
 
         for comic in results:
-            card = ComicCard(comic, self.scrollWidget)
+            card = ComicCard(comic, self._repository, self.scrollWidget)
             card.downloadClicked.connect(self._on_download_clicked)
             self.flowLayout.addWidget(card)
             self.card_map[comic.aid] = card
 
-    def _on_search_error(self, keyword, err_msg, page):
-        if keyword != self.current_keyword:
+    def _on_search_error(self, keyword: str, err_msg: str, page: int) -> None:
+        if keyword != self.current_keyword or page != self.current_page:
             return
 
         self.worker = None
         self.loadingWidget.hide()
-        if page != self.current_page:
-            return
         self.searchBar.setEnabled(True)
         self.bottomWidget.setEnabled(True)
         InfoBar.error("搜索失败", f"网络请求失败：{err_msg}", parent=self, position=InfoBarPosition.TOP_RIGHT)
 
-    def _on_download_clicked(self, comic: Comic):
-        downloader_manager.add_task(comic)
+    def stop_workers(self) -> None:
+        """Request interruption and join all search threads during application shutdown."""
+        candidates = [self.worker, *self.workers.values(), *self._old_workers]
+        workers = list(dict.fromkeys(worker for worker in candidates if worker is not None))
+        for worker in workers:
+            worker.requestInterruption()
+        deadline = time.monotonic() + 16.0
+        for worker in workers:
+            remaining_milliseconds = max(0, int((deadline - time.monotonic()) * 1_000))
+            if worker.isRunning() and not worker.wait(remaining_milliseconds):
+                worker.setParent(None)
+
+    def _on_download_clicked(self, comic: Comic) -> None:
+        self._downloader.add_task(comic)
         InfoBar.success(
             "已加入下载队列",
             f"请前往左侧『下载任务』页面查看进度: {comic.title}",
@@ -527,9 +553,10 @@ class HomeInterface(QWidget):
             position=InfoBarPosition.TOP_RIGHT,
         )
 
-    def _show_context_menu(self, pos):
-        selected_items = self.scrollWidget.get_selected_items()
-        target_card = self.scrollWidget._get_item_at(pos)
+    def _show_context_menu(self, pos: QPoint) -> None:
+        selected_items = [cast(ComicCard, item) for item in self.scrollWidget.get_selected_items()]
+        target_item = self.scrollWidget.get_item_at(pos)
+        target_card = cast(ComicCard | None, target_item)
 
         if not selected_items:
             if target_card:
@@ -561,12 +588,12 @@ class HomeInterface(QWidget):
         global_pos = self.scrollWidget.mapToGlobal(pos)
         menu.exec(global_pos)
 
-    def _bulk_download(self, selected_items):
+    def _bulk_download(self, selected_items: list[ComicCard]) -> None:
         for card in selected_items:
             if hasattr(card, "comic") and card.downloadBtn.isEnabled():
                 card.downloadBtn.setText("已添加队列")
                 card.downloadBtn.setEnabled(False)
-                downloader_manager.add_task(card.comic)
+                self._downloader.add_task(card.comic)
 
         self.scrollWidget.clear_selection()
         InfoBar.success(
@@ -576,8 +603,8 @@ class HomeInterface(QWidget):
             position=InfoBarPosition.TOP_RIGHT,
         )
 
-    def _on_topbar_add_to_queue(self):
-        selected_items = self.scrollWidget.get_selected_items()
+    def _on_topbar_add_to_queue(self) -> None:
+        selected_items = [cast(ComicCard, item) for item in self.scrollWidget.get_selected_items()]
         if not selected_items:
             InfoBar.warning(
                 "未选中漫画",

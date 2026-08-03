@@ -1,40 +1,50 @@
 """Bounded cover-image cache and Qt worker-pool adapter."""
 
-import atexit
 import contextlib
 import hashlib
-import os
-import shutil
+import threading
+import time
+import uuid
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import cast
 
-from curl_cffi import requests
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
 from wnacg.infrastructure.config import cfg
+from wnacg.infrastructure.crawler import WnacgCrawler
 from wnacg.infrastructure.logger import logger
+from wnacg.infrastructure.network_safety import (
+    ensure_expected_content_type,
+    ensure_public_https_url_sync,
+    read_limited_chunks,
+)
+from wnacg.infrastructure.paths import CACHE_DIR
 
-_temp_dirs = set()
+_COVER_CACHE_DIR = CACHE_DIR / "covers"
+_COVER_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+_IMAGE_CONTENT_TYPES = {"image/avif", "image/gif", "image/jpeg", "image/png", "image/webp"}
+type CoverCallback = Callable[[str, QImage], None]
 
 
 def get_temp_dir() -> str:
-    path = str(Path(cfg.download_dir) / ".temp_covers")
-    if path not in _temp_dirs:
-        os.makedirs(path, exist_ok=True)
-        _temp_dirs.add(path)
-    return path
+    """Return the application-owned cover cache directory."""
+    _COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return str(_COVER_CACHE_DIR)
 
 
-def _cleanup_covers():
-    for d in _temp_dirs:
-        with contextlib.suppress(Exception):
-            shutil.rmtree(d, ignore_errors=True)
-    with contextlib.suppress(Exception):
-        shutil.rmtree("data/.temp_covers", ignore_errors=True)
-
-
-# Register cleanup on exit
-atexit.register(_cleanup_covers)
+def _expire_cover_cache() -> None:
+    """Remove only expired regular files from the application-owned cache."""
+    if not _COVER_CACHE_DIR.is_dir():
+        return
+    cutoff = time.time() - _COVER_CACHE_TTL_SECONDS
+    for cache_file in _COVER_CACHE_DIR.iterdir():
+        try:
+            if cache_file.is_file() and not cache_file.is_symlink() and cache_file.stat().st_mtime < cutoff:
+                cache_file.unlink()
+        except OSError as error:
+            logger.warning("Expired cover cache removal failed", path=str(cache_file), error=str(error))
 
 
 class CoverManagerSignals(QObject):
@@ -42,49 +52,51 @@ class CoverManagerSignals(QObject):
 
 
 class CoverFetchTask(QRunnable):
-    def __init__(self, url, signals):
+    def __init__(self, url: str, signals: "CoverManagerSignals", stop_event: threading.Event) -> None:
         super().__init__()
         self.url = url
         self.signals = signals
+        self.stop_event = stop_event
 
-    def run(self):
+    def run(self) -> None:
+        if self.stop_event.is_set():
+            return
+        safe_url = ensure_public_https_url_sync(self.url)
         filename = hashlib.sha256(self.url.encode()).hexdigest() + ".jpg"
-        filepath = os.path.join(get_temp_dir(), filename)
+        filepath = Path(get_temp_dir()) / filename
 
         # 1. Load from disk if exists
-        if os.path.exists(filepath):
-            img = QImage(filepath)
+        if filepath.exists():
+            img = QImage(str(filepath))
             if not img.isNull():
                 self.signals.finished.emit(self.url, img)
                 return
             else:
                 with contextlib.suppress(Exception):
-                    os.remove(filepath)
+                    filepath.unlink()
 
         # 2. Download and write to disk
-        kwargs = {
-            "impersonate": "chrome",
-            "timeout": 5.0,
-        }
-        if cfg.proxy_mode == "custom":
-            kwargs["proxies"] = cfg.curl_cffi_proxies
-        elif cfg.proxy_mode == "direct":
-            kwargs["trust_env"] = False
-        else:
-            kwargs["trust_env"] = True
-
         for attempt in range(3):
             try:
-                with requests.Session(**kwargs) as s:
-                    resp = s.get(self.url)
-
-                resp.raise_for_status()
-                if len(resp.content) > 10 * 1024 * 1024:
-                    raise ValueError("Cover image exceeds 10 MiB limit")
+                with WnacgCrawler.get_sync_client() as client:
+                    resp = client.get(safe_url, timeout=5.0, stream=True)
+                    resp.raise_for_status()
+                    ensure_public_https_url_sync(str(resp.url))
+                    ensure_expected_content_type(resp.headers, _IMAGE_CONTENT_TYPES)
+                    content_length = int(resp.headers.get("content-length", "0") or 0)
+                    if content_length > cfg.max_cover_bytes:
+                        raise ValueError(f"Cover image exceeds {cfg.max_cover_bytes} byte limit")
+                    chunks = cast(
+                        Iterable[bytes],
+                        resp.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                    )
+                    content = read_limited_chunks(chunks, cfg.max_cover_bytes)
+                if self.stop_event.is_set():
+                    return
                 img = QImage()
-                if img.loadFromData(resp.content):
-                    temporary_path = Path(f"{filepath}.tmp")
-                    temporary_path.write_bytes(resp.content)
+                if img.loadFromData(content) and img.width() * img.height() <= cfg.max_image_pixels:
+                    temporary_path = filepath.with_name(f".{filename}.{uuid.uuid4().hex}.tmp")
+                    temporary_path.write_bytes(content)
                     temporary_path.replace(filepath)
                     self.signals.finished.emit(self.url, img)
                     return
@@ -93,33 +105,27 @@ class CoverFetchTask(QRunnable):
                 if attempt == 2:
                     logger.warning(f"CoverFetchTask failed for {self.url} after 3 attempts: {e}")
                 else:
-                    import time
-
-                    time.sleep(1.0)
+                    self.stop_event.wait(1.0)
 
         self.signals.finished.emit(self.url, QImage())
 
 
 class CoverManagerClass(QObject):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        self.pool = QThreadPool.globalInstance()
-        # Limit to 5 concurrent cover downloads to prevent anti-bot blocking
-        # QThreadPool.setMaxThreadCount applies to all tasks in the global instance
-        # If maxThreadCount is lower than 5, we bump it to handle IO easily.
-        # But wait, QThreadPool usually has lots of threads (e.g. 8-16 depending on CPU)
-        # To limit only covers to 5, we should probably just use our own thread pool!
+        _expire_cover_cache()
         self.cover_pool = QThreadPool()
         self.cover_pool.setMaxThreadCount(5)
         self.signals = CoverManagerSignals()
         self.signals.finished.connect(self._on_task_finished)
 
         # In-flight task tracker to avoid duplicate downloads of the same URL
-        self._pending_callbacks = {}
+        self._pending_callbacks: dict[str, list[CoverCallback]] = {}
+        self._stop_event = threading.Event()
 
-    def load(self, url, callback=None):
-        if not url:
+    def load(self, url: str, callback: CoverCallback | None = None) -> None:
+        if not url or self._stop_event.is_set():
             return
         # Disk cache loading is handled asynchronously inside CoverFetchTask.
         if url in self._pending_callbacks:
@@ -128,28 +134,28 @@ class CoverManagerClass(QObject):
             return
 
         self._pending_callbacks[url] = [callback] if callback else []
-        task = CoverFetchTask(url, self.signals)
+        task = CoverFetchTask(url, self.signals, self._stop_event)
         self.cover_pool.start(task)
 
-    def preload(self, url):
+    def preload(self, url: str) -> None:
         self.load(url, None)
 
-    def _on_task_finished(self, url, img):
+    def _on_task_finished(self, url: str, img: QImage) -> None:
         if url in self._pending_callbacks:
             cbs = self._pending_callbacks.pop(url)
             for cb in cbs:
-                if cb:
-                    try:
-                        cb(url, img)
-                    except RuntimeError:
-                        # The UI component (like ComicCard) has been deleted
-                        pass
-                    except Exception as e:
-                        logger.error(f"Callback error in CoverManager: {e}")
+                try:
+                    cb(url, img)
+                except RuntimeError:
+                    logger.debug("Cover callback target was already deleted", url=url)
+                except Exception as error:
+                    logger.error("Cover callback failed", url=url, error=str(error))
 
-    def stop(self):
+    def stop(self) -> None:
+        self._stop_event.set()
         self.cover_pool.clear()
-        self.cover_pool.waitForDone(1000)
+        if not self.cover_pool.waitForDone(6_000):
+            logger.warning("Cover worker pool did not stop within timeout")
         self._pending_callbacks.clear()
 
 

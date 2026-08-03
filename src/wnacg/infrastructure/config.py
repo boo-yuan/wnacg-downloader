@@ -1,7 +1,10 @@
 """Validated application configuration persisted as atomic JSON."""
 
 import json
+import os
 import shutil
+import threading
+import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -12,6 +15,7 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from wnacg.domain.models import DownloadFormat, DownloadNaming
+from wnacg.infrastructure.network_safety import validate_public_https_url
 from wnacg.infrastructure.paths import DATA_DIR
 
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -30,7 +34,7 @@ class AppConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="WNACG_",
-        extra="ignore",
+        extra="forbid",
         validate_assignment=True,
     )
 
@@ -53,13 +57,19 @@ class AppConfig(BaseSettings):
     delete_files_on_cancel: bool = False
     global_speed_limit: int = Field(default=0, ge=0, le=10_000_000)
     max_image_bytes: int = Field(default=100 * 1024 * 1024, ge=1024 * 1024, le=1024 * 1024 * 1024)
+    max_cover_bytes: int = Field(default=10 * 1024 * 1024, ge=256 * 1024, le=100 * 1024 * 1024)
+    max_html_bytes: int = Field(default=4 * 1024 * 1024, ge=256 * 1024, le=32 * 1024 * 1024)
+    max_gallery_images: int = Field(default=5_000, ge=1, le=50_000)
+    max_task_bytes: int = Field(default=20 * 1024 * 1024 * 1024, ge=100 * 1024 * 1024)
+    minimum_free_space_bytes: int = Field(default=512 * 1024 * 1024, ge=64 * 1024 * 1024)
+    max_image_pixels: int = Field(default=100_000_000, ge=1_000_000, le=500_000_000)
 
     @field_validator("download_dir")
     @classmethod
     def validate_download_dir(cls, value: str) -> str:
-        path = Path(value).expanduser()
-        if not str(path).strip():
+        if not value.strip():
             raise ValueError("download_dir cannot be empty")
+        path = Path(value).expanduser()
         return str(path)
 
     @field_validator("domain")
@@ -75,6 +85,7 @@ class AppConfig(BaseSettings):
             or "@" in normalized
         ):
             raise ValueError("domain must be a hostname without scheme, path, credentials, or port")
+        validate_public_https_url(f"https://{normalized}")
         return normalized
 
     @field_validator("backup_domains")
@@ -111,10 +122,17 @@ class AppConfig(BaseSettings):
 
     def save(self) -> None:
         """Persist settings with same-directory atomic replacement."""
-        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        temporary_file = CONFIG_FILE.with_suffix(".tmp")
-        temporary_file.write_text(self.model_dump_json(indent=4), encoding="utf-8")
-        temporary_file.replace(CONFIG_FILE)
+        with _CONFIG_WRITE_LOCK:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary_file = CONFIG_FILE.with_name(f".{CONFIG_FILE.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary_file.open("w", encoding="utf-8", newline="\n") as output:
+                    output.write(self.model_dump_json(indent=4))
+                    output.flush()
+                    os.fsync(output.fileno())
+                temporary_file.replace(CONFIG_FILE)
+            finally:
+                temporary_file.unlink(missing_ok=True)
 
 
 def _backup_invalid_config() -> None:
@@ -164,4 +182,13 @@ def load_config() -> AppConfig:
     return config
 
 
-cfg = load_config()
+_CONFIG_WRITE_LOCK = threading.RLock()
+cfg = AppConfig()
+
+
+def initialize_config() -> AppConfig:
+    """Load persisted settings into the stable application configuration object."""
+    loaded = load_config()
+    for field_name in AppConfig.model_fields:
+        setattr(cfg, field_name, getattr(loaded, field_name))
+    return cfg

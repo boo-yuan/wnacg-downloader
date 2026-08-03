@@ -1,10 +1,13 @@
 """TLS-verified WNACG HTTP adapter and HTML parsers."""
 
 import asyncio
+import contextlib
 import re
 import time
 import urllib.parse
-from typing import Any
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
+from contextlib import AbstractAsyncContextManager
+from typing import TypedDict, Unpack, cast
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession, Response, Session
@@ -12,6 +15,25 @@ from curl_cffi.requests import AsyncSession, Response, Session
 from wnacg.domain.models import Comic
 from wnacg.infrastructure.config import ProxyMode, cfg
 from wnacg.infrastructure.logger import logger
+from wnacg.infrastructure.network_safety import (
+    ensure_expected_content_type,
+    ensure_public_https_url,
+    ensure_public_https_url_sync,
+    read_limited_async_chunks,
+    read_limited_chunks,
+    validate_public_https_url,
+)
+
+type ConnectionSlot = Callable[[], AbstractAsyncContextManager[None]]
+
+_HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
+
+
+class FetchOptions(TypedDict, total=False):
+    """Typed options accepted by bounded HTML fetches."""
+
+    timeout: float
+    allow_redirects: bool
 
 
 class CrawlError(RuntimeError):
@@ -21,44 +43,58 @@ class CrawlError(RuntimeError):
 class WnacgCrawler:
     """Fetch and parse gallery metadata without retaining mutable mirror state."""
 
-    @staticmethod
-    def _session_options() -> dict[str, Any]:
-        options: dict[str, Any] = {"impersonate": "chrome", "timeout": 15.0}
-        match cfg.proxy_mode:
-            case ProxyMode.CUSTOM:
-                options["proxies"] = cfg.curl_cffi_proxies
-            case ProxyMode.DIRECT:
-                options["trust_env"] = False
-            case ProxyMode.SYSTEM:
-                options["trust_env"] = True
-        return options
-
     @classmethod
     def get_sync_client(cls) -> Session[Response]:
-        return Session[Response](**cls._session_options())
+        match cfg.proxy_mode:
+            case ProxyMode.CUSTOM:
+                return Session[Response](impersonate="chrome", timeout=15.0, proxy=cfg.custom_proxy)
+            case ProxyMode.DIRECT:
+                return Session[Response](impersonate="chrome", timeout=15.0, trust_env=False)
+            case ProxyMode.SYSTEM:
+                return Session[Response](impersonate="chrome", timeout=15.0, trust_env=True)
 
     @classmethod
     def get_client(cls) -> AsyncSession[Response]:
-        return AsyncSession[Response](**cls._session_options())
+        match cfg.proxy_mode:
+            case ProxyMode.CUSTOM:
+                return AsyncSession[Response](impersonate="chrome", timeout=15.0, proxy=cfg.custom_proxy)
+            case ProxyMode.DIRECT:
+                return AsyncSession[Response](impersonate="chrome", timeout=15.0, trust_env=False)
+            case ProxyMode.SYSTEM:
+                return AsyncSession[Response](impersonate="chrome", timeout=15.0, trust_env=True)
 
     @staticmethod
     def _mirrors() -> list[str]:
         return list(dict.fromkeys([cfg.domain, *cfg.backup_domains]))
 
     @classmethod
-    def fetch_sync(
+    def fetch_text_sync(
         cls,
         client: Session[Response],
         path: str,
-        **kwargs: Any,
-    ) -> tuple[Response, str]:
+        **kwargs: Unpack[FetchOptions],
+    ) -> tuple[str, str]:
         failures: list[str] = []
         for attempt, domain in enumerate(cls._mirrors()):
             base_url = f"https://{domain}"
             try:
-                response = client.get(f"{base_url}{path}", **kwargs)
+                request_url = ensure_public_https_url_sync(
+                    f"{base_url}{path}",
+                    allowed_hosts=set(cls._mirrors()),
+                )
+                response = client.get(request_url, stream=True, **kwargs)
                 response.raise_for_status()
-                return response, base_url
+                ensure_public_https_url_sync(str(response.url), allowed_hosts=set(cls._mirrors()))
+                ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
+                content_length = int(response.headers.get("content-length", "0") or 0)
+                if content_length > cfg.max_html_bytes:
+                    raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
+                chunks = cast(
+                    Iterable[bytes],
+                    response.iter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                )
+                content = read_limited_chunks(chunks, cfg.max_html_bytes)
+                return content.decode(response.encoding or "utf-8", errors="replace"), base_url
             except Exception as error:
                 failures.append(f"{domain}: {error}")
                 logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))
@@ -67,20 +103,34 @@ class WnacgCrawler:
         raise CrawlError(f"All mirrors failed for {path}: {'; '.join(failures)}")
 
     @classmethod
-    async def fetch(
+    async def fetch_text(
         cls,
         client: AsyncSession[Response],
         path: str,
-        **kwargs: Any,
-    ) -> tuple[Response, str]:
+        **kwargs: Unpack[FetchOptions],
+    ) -> tuple[str, str]:
         failures: list[str] = []
         mirrors = cls._mirrors()
         for attempt, domain in enumerate(mirrors):
             base_url = f"https://{domain}"
             try:
-                response = await client.get(f"{base_url}{path}", **kwargs)
+                request_url = await ensure_public_https_url(
+                    f"{base_url}{path}",
+                    allowed_hosts=set(mirrors),
+                )
+                response = await client.get(request_url, stream=True, **kwargs)
                 response.raise_for_status()
-                return response, base_url
+                await ensure_public_https_url(str(response.url), allowed_hosts=set(mirrors))
+                ensure_expected_content_type(response.headers, _HTML_CONTENT_TYPES)
+                content_length = int(response.headers.get("content-length", "0") or 0)
+                if content_length > cfg.max_html_bytes:
+                    raise ValueError(f"HTML response exceeds {cfg.max_html_bytes} bytes")
+                chunks = cast(
+                    AsyncIterator[bytes],
+                    response.aiter_content(chunk_size=64 * 1024),  # pyright: ignore[reportUnknownMemberType]
+                )
+                content = await read_limited_async_chunks(chunks, cfg.max_html_bytes)
+                return content.decode(response.encoding or "utf-8", errors="replace"), base_url
             except Exception as error:
                 failures.append(f"{domain}: {error}")
                 logger.warning("Mirror request failed", domain=domain, path=path, error=str(error))
@@ -104,6 +154,11 @@ class WnacgCrawler:
             cover_url = str(image_element.get("src", "")) if image_element else ""
             if cover_url.startswith("//"):
                 cover_url = f"https:{cover_url}"
+            if cover_url:
+                with contextlib.suppress(ValueError):
+                    cover_url = validate_public_https_url(cover_url)
+                if not cover_url.startswith("https://"):
+                    cover_url = ""
             info = item.select_one(".info_col")
             info_text = info.get_text(" ", strip=True) if info else ""
             picture_match = re.search(r"(\d+)\s*[张張Pp]", info_text)
@@ -136,8 +191,8 @@ class WnacgCrawler:
         encoded_keyword = urllib.parse.quote(keyword)
         path = f"/search/index.php?q={encoded_keyword}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}"
         with cls.get_sync_client() as client:
-            response, _base_url = cls.fetch_sync(client, path)
-        return cls._parse_search_html(response.text)
+            html, _base_url = cls.fetch_text_sync(client, path)
+        return cls._parse_search_html(html)
 
     @classmethod
     async def search(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
@@ -147,8 +202,8 @@ class WnacgCrawler:
         encoded_keyword = urllib.parse.quote(keyword)
         path = f"/search/index.php?q={encoded_keyword}&m=&syn=yes&f=_all&s=create_time_DESC&p={page}"
         async with cls.get_client() as client:
-            response, _base_url = await cls.fetch(client, path)
-        return await asyncio.to_thread(cls._parse_search_html, response.text)
+            html, _base_url = await cls.fetch_text(client, path)
+        return await asyncio.to_thread(cls._parse_search_html, html)
 
     @staticmethod
     def gallery_aid(value: str) -> str | None:
@@ -167,14 +222,16 @@ class WnacgCrawler:
     def get_comic_sync(cls, aid: str) -> Comic:
         """Resolve enough metadata to enqueue a directly supplied gallery URL."""
         with cls.get_sync_client() as client:
-            response, base_url = cls.fetch_sync(client, f"/photos-index-page-1-aid-{aid}.html")
-        soup = BeautifulSoup(response.text, "html.parser")
+            html, base_url = cls.fetch_text_sync(client, f"/photos-index-page-1-aid-{aid}.html")
+        soup = BeautifulSoup(html, "html.parser")
         heading = soup.select_one("h2") or soup.select_one("title")
         title = heading.get_text(" ", strip=True) if heading else f"Gallery {aid}"
         title = re.sub(r"\s*[-|_]\s*紳士漫畫.*$", "", title).strip() or f"Gallery {aid}"
         count_match = re.search(r"(?:共|總共|总共)?\s*(\d+)\s*[张張Pp]", soup.get_text(" ", strip=True))
         cover = soup.select_one(".pic_box img")
         cover_url = urllib.parse.urljoin(base_url, str(cover.get("src", ""))) if cover else ""
+        if cover_url:
+            cover_url = validate_public_https_url(cover_url)
         return Comic(
             aid=aid,
             title=title,
@@ -197,10 +254,15 @@ class WnacgCrawler:
         return [f"https:{url}" if url.startswith("//") else urllib.parse.urljoin(base_url, url) for url in urls]
 
     @classmethod
-    async def get_all_raw_urls(cls, aid: str) -> list[str]:
+    async def get_all_raw_urls(cls, aid: str, connection_slot: ConnectionSlot | None = None) -> list[str]:
         async with cls.get_client() as client:
-            response, base_url = await cls.fetch(client, f"/photos-gallery-aid-{aid}.html")
-        return await asyncio.to_thread(cls._parse_gallery_urls, response.text, base_url)
+            if connection_slot is None:
+                html, base_url = await cls.fetch_text(client, f"/photos-gallery-aid-{aid}.html")
+            else:
+                async with connection_slot():
+                    html, base_url = await cls.fetch_text(client, f"/photos-gallery-aid-{aid}.html")
+        urls = await asyncio.to_thread(cls._parse_gallery_urls, html, base_url)
+        return [validate_public_https_url(url) for url in urls]
 
     @staticmethod
     def _parse_view_page(html: str, base_url: str) -> tuple[list[str], int]:
@@ -220,18 +282,30 @@ class WnacgCrawler:
         return links, max_page
 
     @classmethod
-    async def get_image_view_links(cls, aid: str) -> list[str]:
+    async def get_image_view_links(cls, aid: str, connection_slot: ConnectionSlot | None = None) -> list[str]:
+        local_semaphore = asyncio.Semaphore(min(cfg.global_max_connections, 8))
+
+        @contextlib.asynccontextmanager
+        async def local_slot() -> AsyncGenerator[None]:
+            async with local_semaphore:
+                yield
+
+        slot = connection_slot or local_slot
         async with cls.get_client() as client:
-            first_response, base_url = await cls.fetch(client, f"/photos-index-page-1-aid-{aid}.html")
-            first_links, max_page = await asyncio.to_thread(cls._parse_view_page, first_response.text, base_url)
+            async with slot():
+                first_html, base_url = await cls.fetch_text(client, f"/photos-index-page-1-aid-{aid}.html")
+            first_links, max_page = await asyncio.to_thread(cls._parse_view_page, first_html, base_url)
+            if max_page > cfg.max_gallery_images:
+                raise CrawlError(f"Gallery page count exceeds configured limit: {max_page}")
 
             async def fetch_page(page_number: int) -> tuple[int, list[str]]:
-                response, _ = await cls.fetch(
-                    client,
-                    f"/photos-index-page-{page_number}-aid-{aid}.html",
-                    timeout=15.0,
-                )
-                links, _ignored = await asyncio.to_thread(cls._parse_view_page, response.text, base_url)
+                async with slot():
+                    html, _ = await cls.fetch_text(
+                        client,
+                        f"/photos-index-page-{page_number}-aid-{aid}.html",
+                        timeout=15.0,
+                    )
+                links, _ignored = await asyncio.to_thread(cls._parse_view_page, html, base_url)
                 if not links:
                     raise CrawlError(f"Gallery {aid} page {page_number} contained no image links")
                 return page_number, links
@@ -247,6 +321,8 @@ class WnacgCrawler:
         deduplicated = list(dict.fromkeys(ordered_links))
         if not deduplicated:
             raise CrawlError(f"Gallery {aid} contained no image links")
+        if len(deduplicated) > cfg.max_gallery_images:
+            raise CrawlError(f"Gallery image count exceeds configured limit: {len(deduplicated)}")
         return deduplicated
 
     @staticmethod
@@ -265,11 +341,13 @@ class WnacgCrawler:
         client: AsyncSession[Response] | None = None,
     ) -> str:
         parsed = urllib.parse.urlparse(view_url)
+        validate_public_https_url(view_url, allowed_hosts=set(cls._mirrors()))
         path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
 
         async def fetch_url(active_client: AsyncSession[Response]) -> str:
-            response, _ = await cls.fetch(active_client, path, allow_redirects=True, timeout=15.0)
-            return await asyncio.to_thread(cls._parse_raw_url, response.text)
+            html, _ = await cls.fetch_text(active_client, path, allow_redirects=True, timeout=15.0)
+            raw_url = await asyncio.to_thread(cls._parse_raw_url, html)
+            return validate_public_https_url(raw_url) if raw_url else ""
 
         if client is not None:
             return await fetch_url(client)

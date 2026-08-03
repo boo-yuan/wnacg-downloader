@@ -2,10 +2,20 @@
 name = "wnacg-downloader"
 version = "1.0.0"
 description = "A modern comic download manager"
+readme = "README.md"
+license = { file = "LICENSE" }
 authors = [
     { name = "boo-yuan" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Win32 (MS Windows)",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
 dependencies = [
     "PySide6>=6.6.0",
     "PySide6-Fluent-Widgets>=1.6.4",
@@ -21,6 +31,11 @@ dependencies = [
 [project.gui-scripts]
 wnacg-downloader = "wnacg.main:main"
 
+[project.urls]
+Homepage = "https://github.com/boo-yuan/wnacg-downloader"
+Issues = "https://github.com/boo-yuan/wnacg-downloader/issues"
+Repository = "https://github.com/boo-yuan/wnacg-downloader"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -33,8 +48,8 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = []
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "ASYNC", "C4", "DTZ", "PTH", "RUF", "S"]
+ignore = ["ASYNC240", "RUF001", "RUF002", "RUF003", "S101", "S311"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -55,22 +70,20 @@ build = [
 
 [tool.pyright]
 pythonVersion = "3.12"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
 include = ["src"]
-strict = [
-    "src/wnacg/domain",
-    "src/wnacg/application",
-    "src/wnacg/infrastructure/config.py",
-    "src/wnacg/infrastructure/crawler.py",
-    "src/wnacg/infrastructure/database.py",
-    "src/wnacg/infrastructure/paths.py",
-    "src/wnacg/infrastructure/updater.py",
-]
+reportMissingTypeStubs = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUntypedBaseClass = false
 
 [tool.coverage.run]
 branch = true
-source = ["wnacg"]
+source = ["wnacg.application", "wnacg.domain", "wnacg.infrastructure"]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+fail_under = 70
