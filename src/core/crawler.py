@@ -108,19 +108,6 @@ class WnacgCrawler:
         raise Exception("All mirror domains failed")
 
     @classmethod
-    def _is_filtered(cls, title: str) -> bool:
-        title_lower = title.lower()
-        if cfg.filter_title_prefix:
-            prefixes = [p.strip().lower() for p in cfg.filter_title_prefix.split(',') if p.strip()]
-            if any(title_lower.startswith(p) for p in prefixes):
-                return True
-        if cfg.filter_title_contains:
-            contains = [c.strip().lower() for c in cfg.filter_title_contains.split(',') if c.strip()]
-            if any(c in title_lower for c in contains):
-                return True
-        return False
-
-    @classmethod
     def search_sync(cls, keyword: str, page: int = 1) -> tuple[list[Comic], int]:
         """
         同步版本的搜索逻辑，用于后台独立线程，避免多个 asyncio 事件循环导致 curl_cffi 崩溃
@@ -160,9 +147,6 @@ class WnacgCrawler:
                     if m_date:
                         date = m_date.group(1)
                     
-                    if cls._is_filtered(title):
-                        continue
-                        
                 results.append(Comic(
                     aid=aid,
                     title=title,
@@ -225,9 +209,6 @@ class WnacgCrawler:
                         if m_date:
                             date = m_date.group(1)
                         
-                        if cls._is_filtered(title):
-                            continue
-                            
                     res.append(Comic(
                         aid=aid,
                         title=title,

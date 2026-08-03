@@ -15,7 +15,6 @@ class ProxyMode(str, Enum):
     CUSTOM = "custom"
 
 class AppConfig(BaseSettings):
-    model_config = {"extra": "ignore"}
     proxy_mode: ProxyMode = Field(default=ProxyMode.SYSTEM, description="默认代理模式")
     custom_proxy: str = Field(default="http://127.0.0.1:7890", description="自定义代理地址")
     download_dir: str = Field(default=str(Path.home() / "Downloads" / "wnacg"), description="默认下载保存路径")
@@ -34,8 +33,6 @@ class AppConfig(BaseSettings):
     show_cancel_prompt: bool = Field(default=True, description="取消任务时是否显示确认弹窗")
     delete_files_on_cancel: bool = Field(default=False, description="取消任务时是否默认删除文件")
     global_speed_limit: int = Field(default=0, description="全局下载限速 (KB/s)，0为不限速")
-    filter_title_prefix: str = Field(default="", description="过滤以这些字符开头的漫画标题（逗号分隔）")
-    filter_title_contains: str = Field(default="", description="过滤包含这些字符的漫画标题（逗号分隔）")
 
     @property
     def curl_cffi_proxies(self) -> dict | None:
@@ -65,17 +62,8 @@ def load_config() -> AppConfig:
         c = AppConfig(**data)
     except Exception as e:
         from core.logger import logger
-        logger.error(f"Config validation error: {e}")
-        # 尝试逐个字段恢复
-        valid_data = {}
-        defaults = AppConfig()
-        for k, v in data.items():
-            if hasattr(defaults, k):
-                valid_data[k] = v
-        try:
-            c = AppConfig(**valid_data)
-        except Exception:
-            c = AppConfig()
+        logger.error(f"Config validation error, resetting invalid fields: {e}")
+        c = AppConfig()
         
     c.save()
     return c
