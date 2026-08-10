@@ -12,6 +12,8 @@ __pycache__/
 # Test, coverage, lint, and type-checker caches
 .cache/
 .codex-pytest-tmp/
+.pytest-tmp-*/
+.smoke-*/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

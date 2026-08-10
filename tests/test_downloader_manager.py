@@ -183,14 +183,16 @@ def test_add_redownload_and_delete_task(monkeypatch: pytest.MonkeyPatch, tmp_pat
     task = worker.add_task(comic)
     assert task.status is TaskStatus.PAUSED
     assert Path(task.save_path).parent == tmp_path
-    assert Path(task.save_path).name == "Two"
+    assert Path(task.save_path).name == "_Two"
 
+    worker._finalize_task_directory(task)
     task.status = TaskStatus.COMPLETED
     task.set_progress(2, 2)
     redownload = worker.add_task(comic)
     assert redownload.id == task.id
     assert redownload.status is TaskStatus.PAUSED
     assert redownload.downloaded_images == 0
+    assert Path(redownload.save_path).name == "_Two"
 
     worker.delete_tasks([task.id], delete_files=False)
     assert repository.get_task(task.id) is None
@@ -231,8 +233,8 @@ def test_same_title_tasks_use_numeric_suffix_without_gallery_id(
     first = worker.add_task(Comic(aid="100", title="Same title"))
     second = worker.add_task(Comic(aid="200", title="Same title"))
 
-    assert Path(first.save_path).name == "Same title"
-    assert Path(second.save_path).name == "Same title (2)"
+    assert Path(first.save_path).name == "_Same title"
+    assert Path(second.save_path).name == "_Same title (2)"
     assert "100" not in Path(first.save_path).name
     assert "200" not in Path(second.save_path).name
 
@@ -257,8 +259,50 @@ def test_prepare_migrates_only_unmaterialized_legacy_paths(tmp_path: Path) -> No
 
     DownloaderWorker(repository).prepare()
 
-    assert Path(repository.tasks[unused.id].save_path).name == "Same title"
-    assert Path(repository.tasks[materialized.id].save_path).name == "Same title [200]"
+    assert Path(repository.tasks[unused.id].save_path).name == "_Same title"
+    assert Path(repository.tasks[materialized.id].save_path).name == "_Same title [200]"
+    assert Path(repository.tasks[materialized.id].save_path).is_dir()
+
+
+def test_prepare_recovers_folder_prefix_from_task_status(tmp_path: Path) -> None:
+    interrupted_pending_path = tmp_path / "Pending"
+    legacy_pending_path = tmp_path / ".Legacy pending"
+    interrupted_completed_path = tmp_path / ".Completed"
+    interrupted_pending_path.mkdir()
+    legacy_pending_path.mkdir()
+    interrupted_completed_path.mkdir()
+    pending = DownloadTask(
+        id="pending-prefix",
+        comic=Comic(aid="pending-prefix", title="Pending"),
+        status=TaskStatus.PAUSED,
+        save_path=str(tmp_path / ".Pending"),
+        download_root=str(tmp_path),
+    )
+    legacy_pending = DownloadTask(
+        id="legacy-pending-prefix",
+        comic=Comic(aid="legacy-pending-prefix", title="Legacy pending"),
+        status=TaskStatus.PAUSED,
+        save_path=str(legacy_pending_path),
+        download_root=str(tmp_path),
+    )
+    completed = DownloadTask(
+        id="completed-prefix",
+        comic=Comic(aid="completed-prefix", title="Completed"),
+        status=TaskStatus.COMPLETED,
+        save_path=str(tmp_path / "Completed"),
+        download_root=str(tmp_path),
+    )
+    repository = MemoryRepository([pending, legacy_pending, completed])
+
+    DownloaderWorker(repository).prepare()
+
+    assert Path(repository.tasks[pending.id].save_path).name == "_Pending"
+    assert Path(repository.tasks[pending.id].save_path).is_dir()
+    assert Path(repository.tasks[legacy_pending.id].save_path).name == "_Legacy pending"
+    assert Path(repository.tasks[legacy_pending.id].save_path).is_dir()
+    assert not legacy_pending_path.exists()
+    assert Path(repository.tasks[completed.id].save_path).name == "Completed"
+    assert Path(repository.tasks[completed.id].save_path).is_dir()
 
 
 def test_pause_resume_and_cancel_commands_update_repository(tmp_path: Path) -> None:
@@ -367,6 +411,8 @@ async def test_process_task_completes_from_valid_existing_files(
     assert repository.images[task.id][0]["status"] == "downloaded"
     assert task.options is not None
     assert task.options.naming_version == 1
+    assert Path(task.save_path) == task_path
+    assert not (tmp_path / "_Five [5]").exists()
     assert not (task_path / ".wnacg-manifest.json").exists()
     assert (task_path / "one.jpg").exists()
     assert not (task_path / "0001-one.jpg").exists()
@@ -386,9 +432,10 @@ async def test_paused_task_resumes_from_persisted_output_without_redownloading(
     monkeypatch.setattr(WnacgCrawler, "get_client", lambda: _ImageClientContext(client))
     monkeypatch.setattr(downloader, "ARTIFACT_METADATA_DIR", tmp_path / "metadata")
 
-    task_path = tmp_path / "Resume"
-    task_path.mkdir()
-    Image.new("RGB", (8, 8), "blue").save(task_path / "one.jpg")
+    incomplete_path = tmp_path / "_Resume"
+    completed_path = tmp_path / "Resume"
+    incomplete_path.mkdir()
+    Image.new("RGB", (8, 8), "blue").save(incomplete_path / "one.jpg")
     task = DownloadTask(
         id="resume-partial",
         comic=Comic(aid="resume", title="Resume"),
@@ -396,7 +443,7 @@ async def test_paused_task_resumes_from_persisted_output_without_redownloading(
         progress=0.5,
         total_images=2,
         downloaded_images=1,
-        save_path=str(task_path),
+        save_path=str(incomplete_path),
         download_root=str(tmp_path),
         options=DownloadOptions(delay_seconds=0.0),
     )
@@ -428,10 +475,58 @@ async def test_paused_task_resumes_from_persisted_output_without_redownloading(
     assert client.requested_urls == ["https://1.1.1.1/two.jpg"]
     assert task.status is TaskStatus.COMPLETED
     assert task.downloaded_images == 2
-    assert (task_path / "one.jpg").exists()
-    assert (task_path / "two.jpg").exists()
-    assert not (task_path / ".wnacg-manifest.json").exists()
+    assert Path(task.save_path) == completed_path
+    assert not incomplete_path.exists()
+    assert (completed_path / "one.jpg").exists()
+    assert (completed_path / "two.jpg").exists()
+    assert not (completed_path / ".wnacg-manifest.json").exists()
     assert len(list((tmp_path / "metadata").glob("*.json"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_final_transaction_restores_incomplete_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from wnacg.application import downloader
+
+    incomplete_path = tmp_path / "_Transaction"
+    incomplete_path.mkdir()
+    Image.new("RGB", (8, 8), "blue").save(incomplete_path / "one.jpg")
+    task = DownloadTask(
+        id="failed-transaction",
+        comic=Comic(aid="failed-transaction", title="Transaction"),
+        status=TaskStatus.PENDING,
+        save_path=str(incomplete_path),
+        download_root=str(tmp_path),
+        options=DownloadOptions(),
+    )
+    repository = MemoryRepository([task])
+    repository.images[task.id] = [
+        ImageRecord(
+            task_id=task.id,
+            image_index=0,
+            view_url="",
+            raw_url="https://1.1.1.1/one.jpg",
+            status="downloaded",
+            output_name="one.jpg",
+        )
+    ]
+
+    def fail_reconciliation(**_kwargs: object) -> None:
+        raise OSError("simulated final transaction failure")
+
+    monkeypatch.setattr(downloader, "reconcile_artifacts", fail_reconciliation)
+    worker = DownloaderWorker(repository)
+    worker._connection_limiter = AdjustableLimiter(2)
+    worker._active_tasks[task.id] = Future()
+
+    await worker._process_task(task.id)
+
+    assert task.status is TaskStatus.FAILED
+    assert Path(task.save_path) == incomplete_path
+    assert incomplete_path.is_dir()
+    assert not (tmp_path / "Transaction").exists()
 
 
 @pytest.mark.asyncio
@@ -458,6 +553,7 @@ async def test_process_task_rejects_gallery_over_configured_limit(
 
     assert task.status is TaskStatus.FAILED
     assert "configured image limit" in (task.error_message or "")
+    assert Path(task.save_path).name == "_Six [6]"
 
 
 @pytest.mark.asyncio

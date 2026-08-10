@@ -93,6 +93,9 @@ def test_card_buttons_expose_each_download_state() -> None:
         cast(TaskRepository, _EmptyRepository()),
         cast(CoverManagerClass, object()),
     )
+    assert card.width() == 188
+    assert card.coverLabel.width() == 164
+    assert card.coverLabel.height() == 209
 
     card.apply_download_state(ComicCardState.QUEUED.value)
     assert card.downloadBtn.text() == "已添加到队列"

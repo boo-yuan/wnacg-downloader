@@ -32,7 +32,7 @@ from wnacg.ui.components.cover_manager import CoverManagerClass
 from wnacg.ui.components.loading_state import AnimatedLoadingState
 from wnacg.ui.components.selectable_container import SelectableContainer
 from wnacg.ui.theme import (
-    accent_color,
+    accent_text_style,
     active_page_button_style,
     muted_text_style,
     round_accent_button_style,
@@ -223,11 +223,9 @@ class HomeInterface(QWidget):
         self._apply_theme_colors()
 
     def _apply_theme_colors(self, _theme: object | None = None) -> None:
-        accent = accent_color()
-        self.logoLabel.setStyleSheet(
-            f"color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 255); font-size: 28px; font-weight: 900;"
-        )
+        self.logoLabel.setStyleSheet(accent_text_style(pixel_size=28, weight=900))
         self.welcomeLabel.setStyleSheet(muted_text_style(pixel_size=15))
+        self.emptyTitle.setStyleSheet(accent_text_style(pixel_size=28, weight=900))
         self.emptySubtitle.setStyleSheet(muted_text_style(pixel_size=15))
         self.backToTopBtn.setStyleSheet(round_accent_button_style())
         self.loadingWidget.refresh_theme()
@@ -330,7 +328,6 @@ class HomeInterface(QWidget):
 
         self.emptyTitle = TitleLabel("未找到相关漫画", self)
         self.emptyTitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.emptyTitle.setStyleSheet("font-size: 28px; font-weight: 900;")
 
         self.emptySubtitle = SubtitleLabel("可能是关键词有误或网络超时，请尝试换个关键词或稍后再试。", self)
         self.emptySubtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)

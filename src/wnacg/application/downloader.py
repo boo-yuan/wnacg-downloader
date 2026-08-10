@@ -28,6 +28,8 @@ from wnacg.application.download_limits import (
 )
 from wnacg.application.file_paths import (
     archive_path,
+    completed_task_directory,
+    incomplete_task_directory,
     prepare_task_directory,
     safe_component,
     task_directory,
@@ -113,14 +115,19 @@ class DownloaderWorker(QThread):
 
         # Check for deleted folders for completed tasks
         tasks = self._repository.get_all_tasks()
-        self._migrate_unused_legacy_task_paths(tasks)
-        self._initialize_task_paths(tasks)
         for task in tasks:
+            if not task.save_path:
+                logger.warning("Skipping task with an empty persisted path", task_id=task.id)
+                continue
             try:
                 migrate_manifest(Path(task.save_path), task.id, ARTIFACT_METADATA_DIR)
             except OSError as error:
                 logger.warning("Legacy artifact metadata migration failed", task_id=task.id, error=str(error))
-            if task.status == TaskStatus.COMPLETED:
+        self._migrate_unused_legacy_task_paths(tasks)
+        self._normalize_persisted_task_paths(tasks)
+        self._initialize_task_paths(tasks)
+        for task in tasks:
+            if task.status == TaskStatus.COMPLETED and task.save_path:
                 save_path = Path(task.save_path)
                 if not save_path.exists() and not archive_path(save_path).exists():
                     self._repository.update_task_status(
@@ -146,15 +153,175 @@ class DownloaderWorker(QThread):
         """Normalize a path for case-insensitive reservation checks on Windows."""
         return str(path.resolve(strict=False)).casefold()
 
+    @staticmethod
+    def _leading_character_count(name: str, character: str) -> int:
+        return len(name) - len(name.lstrip(character))
+
+    def _task_path_pair(self, task: DownloadTask) -> tuple[Path, Path]:
+        """Return the completed and incomplete names for a persisted task path."""
+        if not task.save_path:
+            raise ValueError(f"Task has no persisted download path: {task.id}")
+        current = Path(task.save_path)
+        download_root = Path(task.download_root or current.parent)
+        base_name = task_directory(download_root, task.comic.title).name
+        is_incomplete = self._leading_character_count(current.name, "_") > self._leading_character_count(base_name, "_")
+        if is_incomplete:
+            return completed_task_directory(current), current
+        uses_legacy_dot_prefix = self._leading_character_count(current.name, ".") > self._leading_character_count(
+            base_name, "."
+        )
+        if uses_legacy_dot_prefix:
+            completed_path = current.with_name(current.name[1:])
+            return completed_path, incomplete_task_directory(completed_path)
+        return current, incomplete_task_directory(current)
+
+    @staticmethod
+    def _legacy_incomplete_task_directory(completed_directory: Path) -> Path:
+        """Return the short-lived dot-prefixed name used by an earlier build."""
+        return completed_directory.with_name(f".{completed_directory.name}")
+
+    @staticmethod
+    def _path_or_archive_exists(path: Path) -> bool:
+        archive = archive_path(path)
+        return (
+            path.exists()
+            or path.is_symlink()
+            or path.is_junction()
+            or archive.exists()
+            or archive.is_symlink()
+            or archive.is_junction()
+        )
+
+    def _move_task_directory(
+        self,
+        task: DownloadTask,
+        target_path: Path,
+        *,
+        move_archive: bool,
+        source_override: Path | None = None,
+    ) -> None:
+        """Move one direct-child task directory and persist its path without merging data."""
+        source_path = source_override or Path(task.save_path)
+        download_root = Path(task.download_root or source_path.parent).expanduser().resolve(strict=False)
+        safe_source = validated_task_directory(source_path, download_root)
+        safe_target = validated_task_directory(target_path, download_root)
+        if self._task_path_key(safe_source) == self._task_path_key(safe_target):
+            return
+
+        source_exists = safe_source.exists()
+        target_exists = safe_target.exists()
+        if source_exists and not safe_source.is_dir():
+            raise ValueError(f"Task directory path is not a directory: {safe_source}")
+        if target_exists and not safe_target.is_dir():
+            raise ValueError(f"Target task directory path is not a directory: {safe_target}")
+        source_archive = archive_path(safe_source)
+        target_archive = archive_path(safe_target)
+        source_archive_exists = move_archive and source_archive.exists()
+        if source_exists and target_exists:
+            raise FileExistsError(f"Both task directories exist; refusing to merge: {safe_target}")
+        if source_archive_exists and target_archive.exists():
+            raise FileExistsError(f"Both task archives exist; refusing to overwrite: {target_archive}")
+
+        moved_directory = False
+        moved_archive = False
+        previous_path = task.save_path
+        previous_root = task.download_root
+        try:
+            if source_exists:
+                safe_source.rename(safe_target)
+                moved_directory = True
+            if source_archive_exists:
+                source_archive.rename(target_archive)
+                moved_archive = True
+            task.save_path = str(safe_target)
+            task.download_root = str(download_root)
+            self._repository.save_task(task)
+        except Exception:
+            if moved_archive and target_archive.exists() and not source_archive.exists():
+                target_archive.rename(source_archive)
+            if moved_directory and safe_target.exists() and not safe_source.exists():
+                safe_target.rename(safe_source)
+            task.save_path = previous_path
+            task.download_root = previous_root
+            raise
+
+    def _ensure_incomplete_task_directory(self, task: DownloadTask) -> None:
+        """Ensure a queued, paused, or failed task uses an underscore-prefixed directory."""
+        _completed_path, incomplete_path = self._task_path_pair(task)
+        if self._task_path_key(Path(task.save_path)) == self._task_path_key(incomplete_path):
+            return
+        self._move_task_directory(task, incomplete_path, move_archive=False)
+
+    def _finalize_task_directory(self, task: DownloadTask) -> Path:
+        """Atomically remove the incomplete prefix only after every image is ready."""
+        completed_path, incomplete_path = self._task_path_pair(task)
+        download_root = Path(task.download_root or Path(task.save_path).parent)
+        if self._task_path_key(Path(task.save_path)) != self._task_path_key(incomplete_path):
+            return validated_task_directory(Path(task.save_path), download_root)
+        self._move_task_directory(task, completed_path, move_archive=False)
+        return validated_task_directory(Path(task.save_path), download_root)
+
+    def _normalize_persisted_task_paths(self, tasks: list[DownloadTask]) -> None:
+        """Recover old or interrupted folder naming to match each persisted task status."""
+        for task in tasks:
+            if not task.save_path:
+                continue
+            completed_path, incomplete_path = self._task_path_pair(task)
+            target_path = completed_path if task.status is TaskStatus.COMPLETED else incomplete_path
+            counterpart_path = incomplete_path if task.status is TaskStatus.COMPLETED else completed_path
+            if self._task_path_key(Path(task.save_path)) == self._task_path_key(target_path):
+                target_archive = archive_path(target_path)
+                counterpart_candidates = [counterpart_path]
+                legacy_counterpart = self._legacy_incomplete_task_directory(completed_path)
+                if self._task_path_key(legacy_counterpart) != self._task_path_key(counterpart_path):
+                    counterpart_candidates.append(legacy_counterpart)
+                for recovery_source in counterpart_candidates:
+                    counterpart_archive = archive_path(recovery_source)
+                    counterpart_needs_recovery = not target_path.exists() and recovery_source.exists()
+                    archive_needs_recovery = (
+                        task.status is TaskStatus.COMPLETED
+                        and not target_archive.exists()
+                        and counterpart_archive.exists()
+                    )
+                    if not counterpart_needs_recovery and not archive_needs_recovery:
+                        continue
+                    try:
+                        self._move_task_directory(
+                            task,
+                            target_path,
+                            move_archive=task.status is TaskStatus.COMPLETED,
+                            source_override=recovery_source,
+                        )
+                    except Exception as error:
+                        logger.warning("Interrupted task path recovery failed", task_id=task.id, error=str(error))
+                    break
+                continue
+            source_override = None
+            current_path = Path(task.save_path)
+            if not current_path.exists() and counterpart_path.exists():
+                source_override = counterpart_path
+            try:
+                self._move_task_directory(
+                    task,
+                    target_path,
+                    move_archive=task.status is TaskStatus.COMPLETED,
+                    source_override=source_override,
+                )
+            except Exception as error:
+                logger.warning("Task directory state recovery failed", task_id=task.id, error=str(error))
+
     def _initialize_task_paths(self, tasks: list[DownloadTask] | None = None) -> None:
         """Reserve persisted paths once so title collisions never merge task output."""
         with self._lock:
             if self._task_paths_initialized:
                 return
             known_tasks = tasks if tasks is not None else self._repository.get_all_tasks()
-            self._reserved_task_paths.update(
-                self._task_path_key(Path(task.save_path)) for task in known_tasks if task.save_path
-            )
+            for task in known_tasks:
+                if not task.save_path:
+                    continue
+                completed_path, incomplete_path = self._task_path_pair(task)
+                self._reserved_task_paths.add(self._task_path_key(completed_path))
+                self._reserved_task_paths.add(self._task_path_key(incomplete_path))
             self._task_paths_initialized = True
 
     def _migrate_unused_legacy_task_paths(self, tasks: list[DownloadTask]) -> None:
@@ -162,6 +329,8 @@ class DownloaderWorker(QThread):
         migration_candidates: list[tuple[DownloadTask, Path, Path]] = []
         occupied_paths: set[str] = set()
         for task in tasks:
+            if not task.save_path:
+                continue
             old_path = Path(task.save_path)
             download_root = Path(task.download_root or old_path.parent).expanduser().resolve()
             safe_aid = safe_component(task.comic.aid, "unknown")
@@ -175,21 +344,27 @@ class DownloaderWorker(QThread):
             if legacy_matches and not has_artifacts:
                 migration_candidates.append((task, old_path, download_root))
             else:
-                occupied_paths.add(self._task_path_key(old_path))
+                completed_path, incomplete_path = self._task_path_pair(task)
+                occupied_paths.add(self._task_path_key(completed_path))
+                occupied_paths.add(self._task_path_key(incomplete_path))
 
         for task, old_path, download_root in migration_candidates:
             base_path = task_directory(download_root, task.comic.title)
-            candidate = base_path
+            completed_candidate = base_path
             suffix = 2
             while (
-                self._task_path_key(candidate) in occupied_paths
-                or candidate.exists()
-                or candidate.is_symlink()
-                or archive_path(candidate).exists()
-                or archive_path(candidate).is_symlink()
+                self._task_path_key(completed_candidate) in occupied_paths
+                or self._task_path_key(incomplete_task_directory(completed_candidate)) in occupied_paths
+                or self._path_or_archive_exists(completed_candidate)
+                or self._path_or_archive_exists(incomplete_task_directory(completed_candidate))
             ):
-                candidate = base_path.with_name(f"{base_path.name} ({suffix})")
+                completed_candidate = base_path.with_name(f"{base_path.name} ({suffix})")
                 suffix += 1
+            candidate = (
+                completed_candidate
+                if task.status is TaskStatus.COMPLETED
+                else incomplete_task_directory(completed_candidate)
+            )
             previous_path = task.save_path
             task.save_path = str(candidate)
             task.download_root = str(download_root)
@@ -200,25 +375,29 @@ class DownloaderWorker(QThread):
                 occupied_paths.add(self._task_path_key(old_path))
                 logger.warning("Legacy task path migration failed", task_id=task.id, error=str(error))
                 continue
-            occupied_paths.add(self._task_path_key(candidate))
+            occupied_paths.add(self._task_path_key(completed_candidate))
+            occupied_paths.add(self._task_path_key(incomplete_task_directory(completed_candidate)))
             logger.info("Migrated unused legacy task path", task_id=task.id)
 
     def _reserve_task_directory(self, download_root: Path, title: str) -> Path:
         """Reserve a title-only path, adding a numeric suffix for genuine collisions."""
         self._initialize_task_paths()
         base_path = task_directory(download_root, title)
-        candidate = base_path
+        completed_candidate = base_path
         suffix = 2
         with self._lock:
             while (
-                self._task_path_key(candidate) in self._reserved_task_paths
-                or candidate.exists()
-                or archive_path(candidate).exists()
+                self._task_path_key(completed_candidate) in self._reserved_task_paths
+                or self._task_path_key(incomplete_task_directory(completed_candidate)) in self._reserved_task_paths
+                or self._path_or_archive_exists(completed_candidate)
+                or self._path_or_archive_exists(incomplete_task_directory(completed_candidate))
             ):
-                candidate = base_path.with_name(f"{base_path.name} ({suffix})")
+                completed_candidate = base_path.with_name(f"{base_path.name} ({suffix})")
                 suffix += 1
-            self._reserved_task_paths.add(self._task_path_key(candidate))
-        return candidate
+            incomplete_candidate = incomplete_task_directory(completed_candidate)
+            self._reserved_task_paths.add(self._task_path_key(completed_candidate))
+            self._reserved_task_paths.add(self._task_path_key(incomplete_candidate))
+        return incomplete_candidate
 
     def add_task(self, comic: Comic) -> DownloadTask:
         existing = self._repository.get_task_by_aid(comic.aid)
@@ -231,6 +410,12 @@ class DownloaderWorker(QThread):
                 return existing
             elif existing.status in (TaskStatus.FAILED, TaskStatus.MISSING, TaskStatus.COMPLETED):
                 previous_status = existing.status
+                try:
+                    self._ensure_incomplete_task_directory(existing)
+                except Exception as error:
+                    logger.error("Failed to mark task directory incomplete", task_id=existing.id, error=str(error))
+                    self.signals.task_error.emit(existing.id, str(error))
+                    return existing
                 self._repository.update_task_status(existing.id, TaskStatus.PENDING)
                 existing.status = TaskStatus.PENDING
                 if previous_status in (TaskStatus.MISSING, TaskStatus.COMPLETED):
@@ -264,7 +449,9 @@ class DownloaderWorker(QThread):
             self._repository.save_task(task)
         except Exception:
             with self._lock:
+                completed_path = completed_task_directory(save_path)
                 self._reserved_task_paths.discard(self._task_path_key(save_path))
+                self._reserved_task_paths.discard(self._task_path_key(completed_path))
             raise
         self.signals.task_added.emit(task)
         self._update_badge()
@@ -633,6 +820,8 @@ class DownloaderWorker(QThread):
 
     async def _process_task(self, task_id: str) -> None:
         cancel_event = asyncio.Event()
+        task: DownloadTask | None = None
+        directory_finalized = False
         try:
             task = await asyncio.to_thread(self._repository.get_task, task_id)
             if task is None:
@@ -658,6 +847,7 @@ class DownloaderWorker(QThread):
                     return
                 self._cancel_events[task_id] = cancel_event
 
+            await asyncio.to_thread(self._ensure_incomplete_task_directory, task)
             self.signals.task_status_changed.emit(task_id, TaskStatus.DOWNLOADING)
             recorded_root = Path(task.download_root or Path(task.save_path).parent)
             safe_task_path = await asyncio.to_thread(
@@ -795,6 +985,8 @@ class DownloaderWorker(QThread):
             if task.downloaded_images != task.total_images:
                 missing = task.total_images - task.downloaded_images
                 raise RuntimeError(f"{missing} images could not be downloaded")
+            await asyncio.to_thread(self._finalize_task_directory, task)
+            directory_finalized = True
             images = await asyncio.to_thread(self._repository.get_images, task_id)
             current_files = await asyncio.to_thread(
                 current_output_files,
@@ -816,6 +1008,15 @@ class DownloaderWorker(QThread):
             self.signals.task_status_changed.emit(task_id, TaskStatus.COMPLETED)
         except Exception as error:
             if not cancel_event.is_set():
+                if directory_finalized and task is not None:
+                    try:
+                        await asyncio.to_thread(self._ensure_incomplete_task_directory, task)
+                    except Exception as path_error:
+                        logger.error(
+                            "Failed to restore incomplete task directory prefix",
+                            task_id=task_id,
+                            error=str(path_error),
+                        )
                 logger.error("Download task failed", task_id=task_id, error=str(error))
                 await asyncio.to_thread(
                     self._repository.update_task_status,

@@ -4,7 +4,9 @@ import pytest
 
 from wnacg.application.file_paths import (
     archive_path,
+    completed_task_directory,
     image_base_name,
+    incomplete_task_directory,
     safe_component,
     task_directory,
     validated_task_directory,
@@ -17,6 +19,14 @@ def test_task_directory_uses_safe_title_without_gallery_id(tmp_path: Path) -> No
     assert result.parent == tmp_path.resolve()
     assert result.name == "AB"
     assert "[" not in result.name
+
+
+def test_task_directory_state_prefix_round_trip() -> None:
+    completed = Path("downloads/Gallery")
+    incomplete = incomplete_task_directory(completed)
+
+    assert incomplete == Path("downloads/_Gallery")
+    assert completed_task_directory(incomplete) == completed
 
 
 def test_image_original_name_has_no_sequence_prefix() -> None:

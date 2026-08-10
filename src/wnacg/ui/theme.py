@@ -79,6 +79,13 @@ def primary_text_style(*, pixel_size: int | None = None, weight: int | None = No
     return f"color: {_css_color(primary_text_color())};{font_rule}{weight_rule}"
 
 
+def accent_text_style(*, pixel_size: int | None = None, weight: int | None = None) -> str:
+    """Build a theme-aware accent-label style for highlighted text."""
+    font_rule = f" font-size: {pixel_size}px;" if pixel_size is not None else ""
+    weight_rule = f" font-weight: {weight};" if weight is not None else ""
+    return f"color: {_css_color(accent_color())};{font_rule}{weight_rule}"
+
+
 def danger_text_style(*, bold: bool = False) -> str:
     """Build a theme-aware error/warning text style."""
     weight_rule = " font-weight: 600;" if bold else ""

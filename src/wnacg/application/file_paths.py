@@ -35,6 +35,20 @@ def task_directory(download_root: Path, title: str) -> Path:
     return download_root.expanduser().resolve() / safe_title
 
 
+def incomplete_task_directory(completed_directory: Path) -> Path:
+    """Prefix a task directory name while its gallery is incomplete."""
+    if not completed_directory.name:
+        raise ValueError("Completed task directory must have a name")
+    return completed_directory.with_name(f"_{completed_directory.name}")
+
+
+def completed_task_directory(incomplete_directory: Path) -> Path:
+    """Remove the single application-owned incomplete-directory prefix."""
+    if not incomplete_directory.name.startswith("_") or len(incomplete_directory.name) == 1:
+        raise ValueError(f"Task directory is not marked incomplete: {incomplete_directory}")
+    return incomplete_directory.with_name(incomplete_directory.name[1:])
+
+
 def image_base_name(index: int, raw_url: str, naming: str, naming_version: int) -> str:
     """Build an image basename while preserving recognition of prefixed legacy files."""
     sequence = f"{index + 1:04d}"

@@ -26,6 +26,10 @@ from wnacg.ui.theme import (
 )
 
 _IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+_COVER_WIDTH = 164
+_COVER_HEIGHT = round(250 * _COVER_WIDTH / 196)
+_CARD_MARGIN = 12
+_CARD_WIDTH = _COVER_WIDTH + (_CARD_MARGIN * 2)
 
 
 class ComicCardState(StrEnum):
@@ -89,28 +93,29 @@ class ComicCard(ElevatedCardWidget):
         self.comic = comic
         self._repository = repository
         self._cover_manager = cover_manager
-        self.setFixedWidth(220)
+        self.setFixedWidth(_CARD_WIDTH)
 
         self.vbox = QVBoxLayout(self)
         self.vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.vbox.setSpacing(6)
-        self.vbox.setContentsMargins(12, 12, 12, 12)
+        self.vbox.setContentsMargins(_CARD_MARGIN, _CARD_MARGIN, _CARD_MARGIN, _CARD_MARGIN)
 
         self._is_selected = False
         self._download_state = ComicCardState.CHECKING
 
         # 封面图
         self.coverLabel = QLabel(self)
-        self.coverLabel.setFixedSize(196, 250)
-        self.coverLabel.setScaledContents(True)
+        self.coverLabel.setFixedSize(_COVER_WIDTH, _COVER_HEIGHT)
+        self.coverLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.coverLabel.setScaledContents(False)
 
         # 标题 (完整显示，自适应高度)
         self.titleLabel = QLabel(comic.title, self)
         self.titleLabel.setWordWrap(True)
-        self.titleLabel.setFixedWidth(196)
+        self.titleLabel.setFixedWidth(_COVER_WIDTH)
         # 强制设置固定高度，防止在布局自适应时与封面发生浮动重叠
         font_metrics = self.titleLabel.fontMetrics()
-        rect = font_metrics.boundingRect(0, 0, 196, 9999, Qt.TextFlag.TextWordWrap, comic.title)
+        rect = font_metrics.boundingRect(0, 0, _COVER_WIDTH, 9999, Qt.TextFlag.TextWordWrap, comic.title)
         title_h = rect.height() + 5
         self.titleLabel.setFixedHeight(title_h)
 
@@ -145,7 +150,7 @@ class ComicCard(ElevatedCardWidget):
         self.vbox.addWidget(self.downloadBtn)
         self.vbox.addWidget(self.openBtn)
 
-        total_h = 12 + 250 + 6 + title_h + 6 + 20 + 6 + 32 + 12
+        total_h = _CARD_MARGIN + _COVER_HEIGHT + 6 + title_h + 6 + 20 + 6 + 32 + _CARD_MARGIN
         self.setFixedHeight(total_h)
 
         self.loader = None
@@ -170,7 +175,13 @@ class ComicCard(ElevatedCardWidget):
             return
         try:
             if not img.isNull():
-                self.coverLabel.setPixmap(QPixmap.fromImage(img))
+                pixmap = QPixmap.fromImage(img).scaled(
+                    _COVER_WIDTH,
+                    _COVER_HEIGHT,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.coverLabel.setPixmap(pixmap)
         except RuntimeError:
             return
 
