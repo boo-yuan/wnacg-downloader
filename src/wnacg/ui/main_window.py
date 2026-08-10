@@ -35,6 +35,21 @@ from wnacg.ui.views.setting_interface import (
     NetworkSettingInterface,
 )
 
+DEFAULT_WINDOW_WIDTH = 1200
+DEFAULT_WINDOW_HEIGHT = 720
+MINIMUM_WINDOW_WIDTH = 960
+MINIMUM_WINDOW_HEIGHT = 600
+SCREEN_EDGE_MARGIN = 48
+
+
+def calculate_window_sizes(available_width: int, available_height: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return DPI-independent target and minimum sizes that fit the current screen."""
+    usable_width = max(1, available_width - (SCREEN_EDGE_MARGIN * 2))
+    usable_height = max(1, available_height - (SCREEN_EDGE_MARGIN * 2))
+    target_size = (min(DEFAULT_WINDOW_WIDTH, usable_width), min(DEFAULT_WINDOW_HEIGHT, usable_height))
+    minimum_size = (min(MINIMUM_WINDOW_WIDTH, usable_width), min(MINIMUM_WINDOW_HEIGHT, usable_height))
+    return target_size, minimum_size
+
 
 class ClosePromptDialog(MessageBoxBase):
     def __init__(self, active_count: int = 0, parent: QWidget | None = None) -> None:
@@ -150,17 +165,19 @@ class MainWindow(FluentWindow):
         self._previous_count = count
 
     def initWindow(self) -> None:
-        self.resize(1060, 960)
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(800)
         self.setWindowTitle("WNACG Downloader")
 
         icon_path = Path(__file__).resolve().parents[1] / "resource" / "icon.png"
         self.setWindowIcon(QIcon(str(icon_path)))
 
         desktop = self.screen().availableGeometry()
-        w, h = desktop.width(), desktop.height()
-        self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
+        target_size, minimum_size = calculate_window_sizes(desktop.width(), desktop.height())
+        self.setMinimumSize(*minimum_size)
+        self.resize(*target_size)
+        self.move(
+            desktop.x() + (desktop.width() - self.width()) // 2,
+            desktop.y() + (desktop.height() - self.height()) // 2,
+        )
 
     def _init_tray(self) -> None:
         icon_path = Path(__file__).resolve().parents[1] / "resource" / "icon.png"

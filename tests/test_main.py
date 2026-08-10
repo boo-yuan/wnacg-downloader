@@ -10,6 +10,13 @@ import wnacg.main as entrypoint
 from wnacg.domain.models import Comic, DownloadTask, TaskStatus
 from wnacg.infrastructure import database
 from wnacg.infrastructure.paths import DATA_DIR
+from wnacg.ui.main_window import calculate_window_sizes
+
+
+def test_window_sizes_are_dpi_independent_and_screen_safe() -> None:
+    assert calculate_window_sizes(2560, 1400) == ((1200, 720), (960, 600))
+    assert calculate_window_sizes(1707, 900) == ((1200, 720), (960, 600))
+    assert calculate_window_sizes(1280, 680) == ((1184, 584), (960, 584))
 
 
 def test_second_instance_does_not_reset_live_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
